@@ -271,6 +271,12 @@ class OmniSensePipeline:
         import cv2
         from PIL import Image
 
+        # 縮到寬度 640px，保持比例 — 大幅降低 YOLO + Depth 延遲
+        h0, w0 = frame.shape[:2]
+        if w0 > 640:
+            scale = 640 / w0
+            frame = cv2.resize(frame, (640, int(h0 * scale)))
+
         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         t_depth = time.perf_counter()
         depth_result = self.depth_pipe(pil_img)
