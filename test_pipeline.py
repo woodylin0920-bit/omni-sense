@@ -5,7 +5,10 @@ pipeline.py 的 7 個必要 test。
 跑法: cd ~/Desktop/omni-sense && ./venv/bin/pytest test_pipeline.py -v
 """
 
+import os
 import socket
+import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +23,8 @@ def make_pipeline(lang: str = "zh", ollama_ready: bool = True) -> pipeline.OmniS
     p.lang = lang
     p._last_alert = {}
     p._ollama_ready = ollama_ready
+    p._bg_thread = None
+    p._bg_lock = threading.Lock()
     p.model = MagicMock()
     p.depth_pipe = MagicMock()
     return p
@@ -87,15 +92,17 @@ def test_cooldown_gradient():
 
 # === Test 5: ollama_describe 正常路徑 ===
 def test_ollama_describe_happy_path():
-    """mock ollama.generate 回 response，驗證函式正確剝出文字。"""
+    """sys.modules mock 整個 ollama，避免 import 時連接 daemon（卡 ~79s）。"""
     fake_response = {"response": "前方有車，請小心  "}
+    mock_ollama = MagicMock()
+    mock_ollama.generate.return_value = fake_response
 
-    with patch("ollama.generate", return_value=fake_response) as mock_gen:
+    with patch.dict("sys.modules", {"ollama": mock_ollama}):
         result = pipeline.ollama_describe(["car"], lang="zh")
 
     assert result == "前方有車，請小心"  # strip 後
-    mock_gen.assert_called_once()
-    args, kwargs = mock_gen.call_args
+    mock_ollama.generate.assert_called_once()
+    _, kwargs = mock_ollama.generate.call_args
     assert kwargs["model"] == pipeline.OLLAMA_MODEL
     assert "繁體中文" in kwargs["prompt"]
     assert "car" in kwargs["prompt"]
@@ -143,3 +150,134 @@ def test_set_language_runtime():
     # 不支援的語言應 raise
     with pytest.raises(ValueError):
         p.set_language("kr")
+
+
+# === Test 8: 背景 worker 單工化（drop-if-busy 策略）===
+def test_bg_worker_single_thread():
+    """bg thread 正在跑時，新 alert 不啟動第二個 worker（忽略策略）。"""
+    p = make_pipeline()
+
+    # 模擬一個正在執行中的 bg thread
+    running_event = threading.Event()
+    block_event = threading.Event()
+
+    def slow_bg():
+        running_event.set()
+        block_event.wait(timeout=5)
+
+    p._bg_thread = threading.Thread(target=slow_bg, daemon=True)
+    p._bg_thread.start()
+    running_event.wait()  # 確保 thread 已在跑
+
+    with patch.object(p, "_detect", return_value=[("car", "near", 0.9, 0.2)]), \
+         patch("pipeline.speak_local"), \
+         patch("pipeline.gemini_describe") as mock_gemini, \
+         patch("pipeline.ollama_describe") as mock_ollama:
+
+        p.process_frame(MagicMock())
+
+    # bg worker 在跑 → 忽略新請求，LLM 不被呼叫
+    mock_gemini.assert_not_called()
+    mock_ollama.assert_not_called()
+
+    block_event.set()
+    p._bg_thread.join(timeout=1)
+
+
+# === Test 9: 資源路徑是絕對路徑（相對 pipeline.py 目錄）===
+def test_absolute_paths():
+    """YOLO_MODEL 與 _WARMUP_IMG 是以 pipeline.py 所在目錄為基準的絕對路徑。"""
+    pipeline_dir = os.path.dirname(os.path.abspath(pipeline.__file__))
+
+    assert os.path.isabs(pipeline.YOLO_MODEL), "YOLO_MODEL 應為絕對路徑"
+    assert pipeline.YOLO_MODEL.startswith(pipeline_dir)
+    assert pipeline.YOLO_MODEL.endswith("yolo26s.pt")
+
+    warmup = str(pipeline._WARMUP_IMG)
+    assert os.path.isabs(warmup), "_WARMUP_IMG 應為絕對路徑"
+    assert warmup.startswith(pipeline_dir)
+    assert warmup.endswith("bus.jpg")
+
+
+# === Test 10: speak_edge 每次產生唯一暫存檔路徑 ===
+def test_speak_edge_unique_tempfile():
+    """連續兩次 speak_edge 使用不同暫存檔路徑，不互相覆蓋。"""
+    paths_used = []
+
+    def capture_popen(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[0] == "afplay":
+            paths_used.append(cmd[1])
+        m = MagicMock()
+        m.wait.return_value = 0
+        return m
+
+    with patch("asyncio.run"), \
+         patch("subprocess.Popen", side_effect=capture_popen):
+        pipeline.speak_edge("first", lang="zh")
+        pipeline.speak_edge("second", lang="en")
+
+    assert len(paths_used) == 2
+    assert paths_used[0] != paths_used[1], "兩次呼叫應使用不同暫存檔"
+    assert all(p.endswith(".mp3") for p in paths_used)
+    assert all("omni_tts.mp3" not in p for p in paths_used), "不應使用硬編碼路徑"
+
+    # 清理 asyncio.run 被 mock 時留下的空檔
+    for p in paths_used:
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+
+
+# === Test 11: ultralytics lazy import — import pipeline 不觸發 torch 載入 ===
+def test_ultralytics_not_imported_at_module_level():
+    """import pipeline 不應在 module 層觸發 ultralytics/torch。
+    YOLO 必須只在 OmniSensePipeline.__init__ 內才被 import。
+    """
+    import sys
+    # ultralytics 不應出現在 sys.modules（除非被其他測試已 import）
+    # 直接驗證 pipeline 模組頂層不含 YOLO class reference
+    assert not hasattr(pipeline, "YOLO"), (
+        "YOLO 不應在 pipeline module 頂層可見；必須是 lazy import"
+    )
+
+
+# === Test 12: __init__ lazy import 可被 sys.modules mock 攔截 ===
+def test_init_lazy_import_path():
+    """用全 sys.modules mock 驗證 __init__ 的 lazy YOLO import 路徑正確，不觸發真實 torch 載入。"""
+    mock_yolo_cls = MagicMock()
+    mock_yolo_instance = MagicMock()
+    mock_yolo_cls.return_value = mock_yolo_instance  # YOLO(path) returns mock model
+
+    mock_depth_pipe = MagicMock()
+    mock_hf_module = MagicMock()
+    mock_hf_module.pipeline.return_value = mock_depth_pipe
+
+    mock_pil_image = MagicMock()
+    mock_pil_module = MagicMock()
+    mock_pil_module.Image.open.return_value = mock_pil_image
+
+    mock_ollama = MagicMock()
+    mock_ollama.generate.side_effect = Exception("no daemon")
+
+    sys_mocks = {
+        "ultralytics": MagicMock(YOLO=mock_yolo_cls),
+        "transformers": mock_hf_module,
+        "PIL": mock_pil_module,
+        "PIL.Image": mock_pil_module.Image,
+        "ollama": mock_ollama,
+    }
+
+    with patch.dict("sys.modules", sys_mocks), \
+         patch("pipeline.YOLO_MODEL", "/fake/yolo.pt"), \
+         patch("pipeline._WARMUP_IMG", Path("/fake/bus.jpg")), \
+         patch("pipeline.check_network"), \
+         patch("builtins.print"):
+
+        p = pipeline.OmniSensePipeline(lang="zh")
+
+    # YOLO was constructed with the correct path
+    mock_yolo_cls.assert_called_once_with("/fake/yolo.pt")
+    assert p.lang == "zh"
+    # YOLO still not at module level after __init__
+    assert not hasattr(pipeline, "YOLO")

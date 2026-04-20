@@ -15,12 +15,15 @@ import time
 import subprocess
 import threading
 import socket
+import tempfile
+from pathlib import Path
 from typing import Optional
 
-from ultralytics import YOLO
-
 # --- 設定 ---
-YOLO_MODEL = "yolo26s.pt"
+_HERE = Path(__file__).resolve().parent
+_WARMUP_IMG = _HERE / "bus.jpg"
+
+YOLO_MODEL = str(_HERE / "yolo26s.pt")
 OLLAMA_MODEL = "gemma3:1b"
 FRAME_STRIDE = 6  # 每 6 幀跑 1 次 pipeline（~5fps 分析 @ 30fps 輸入）
 
@@ -111,7 +114,7 @@ def speak_local(text: str, lang: str = "zh"):
 
 
 def speak_edge(text: str, lang: str = "zh"):
-    """Layer 2 edge-tts，自然語音，但需要網路。"""
+    """Layer 2 edge-tts，自然語音，但需要網路。每次產生唯一暫存檔避免並發覆蓋。"""
     import asyncio
     import edge_tts
 
@@ -122,19 +125,28 @@ def speak_edge(text: str, lang: str = "zh"):
     }
     voice = voice_map.get(lang, voice_map["zh"])
 
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
     async def _run():
         communicate = edge_tts.Communicate(text, voice)
-        await communicate.save("/tmp/omni_tts.mp3")
+        await communicate.save(tmp_path)
 
     try:
         asyncio.run(_run())
-        subprocess.Popen(
-            ["afplay", "/tmp/omni_tts.mp3"],
+        proc = subprocess.Popen(
+            ["afplay", tmp_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        # 播放完後刪除暫存檔（daemon thread，不阻塞主流程）
+        def _cleanup(path: str, p):
+            p.wait()
+            Path(path).unlink(missing_ok=True)
+        threading.Thread(target=_cleanup, args=(tmp_path, proc), daemon=True).start()
     except Exception as e:
-        # 失敗（離線、timeout）直接 fallback 到 say
+        Path(tmp_path).unlink(missing_ok=True)
         print(f"[TTS] edge-tts 失敗（{e}），改用本地 say")
         speak_local(text, lang)
 
@@ -211,10 +223,13 @@ class OmniSensePipeline:
         self.lang = lang
         self._last_alert: dict[tuple[str, str], float] = {}
         self._ollama_ready = False
+        self._bg_thread: Optional[threading.Thread] = None
+        self._bg_lock = threading.Lock()
 
         print("載入 YOLO26s...")
+        from ultralytics import YOLO
         self.model = YOLO(YOLO_MODEL)
-        self.model("bus.jpg", verbose=False)  # warm up
+        self.model(str(_WARMUP_IMG), verbose=False)  # warm up
 
         print("載入 DepthAnything V2...")
         from transformers import pipeline as hf_pipeline
@@ -224,7 +239,7 @@ class OmniSensePipeline:
             "depth-estimation",
             model="depth-anything/Depth-Anything-V2-Small-hf",
         )
-        self.depth_pipe(Image.open("bus.jpg"))  # warm up
+        self.depth_pipe(Image.open(_WARMUP_IMG))  # warm up
 
         print(f"Warm up Ollama {OLLAMA_MODEL}...")
         try:
@@ -399,13 +414,17 @@ class OmniSensePipeline:
             self._mark_alerted(nearest_label, nearest_dist)
 
             # Layer 2/3 背景補充描述
+            # 策略：忽略新請求（drop-if-busy）。同一時間只允許一個 worker，
+            # 避免連續 alert 觸發多個 LLM 呼叫堆積。新請求來時若舊 worker 仍在跑則跳過。
             all_labels = [d[0] for d in detections[:3]]
-            self._bg_thread = threading.Thread(
-                target=self._background_describe,
-                args=(all_labels, t0),
-                daemon=True,
-            )
-            self._bg_thread.start()
+            with self._bg_lock:
+                if self._bg_thread is None or not self._bg_thread.is_alive():
+                    self._bg_thread = threading.Thread(
+                        target=self._background_describe,
+                        args=(all_labels, t0),
+                        daemon=True,
+                    )
+                    self._bg_thread.start()
 
     def _background_describe(self, labels, t0=None):
         """Layer 2 線上優先 → 失敗 / 離線 fallback 到 Layer 3。"""

@@ -8,9 +8,12 @@ benchmark.py — 各階段延遲測量，投資人 demo 用的速度數字。
 import time
 import statistics
 import os
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
 
 RUNS = 5  # 每項跑幾次（首次含 warm-up，去掉第一次再算）
-IMG = "bus.jpg"
+IMG = str(_HERE / "bus.jpg")
 
 
 def measure(fn, runs=RUNS):
@@ -33,12 +36,15 @@ def main():
     print("  omni-sense benchmark")
     print("=" * 55)
 
+    avg_yolo_ms = avg_depth_ms = avg_combined_ms = None
+    avg_ollama_ms = avg_gemini_ms = None
+
     # ── Layer 1: YOLO ──────────────────────────────────────
     print("\n[1/4] 載入 YOLO26s...", flush=True)
     from ultralytics import YOLO
     import cv2
 
-    model = YOLO("yolo26s.pt")
+    model = YOLO(str(_HERE / "yolo26s.pt"))
     frame = cv2.imread(IMG)
     model(frame, verbose=False)  # warm up
 
@@ -46,6 +52,7 @@ def main():
         model(frame, verbose=False)
 
     times = measure(run_yolo)
+    avg_yolo_ms = statistics.mean(times)
     print(f"  YOLO26s 推論：{fmt(times)}")
 
     # ── Layer 1: DepthAnything V2 Small ────────────────────
@@ -64,6 +71,7 @@ def main():
         depth_pipe(pil_img)
 
     times = measure(run_depth)
+    avg_depth_ms = statistics.mean(times)
     print(f"  DepthAnything 推論：{fmt(times)}")
 
     # ── Layer 1: 全偵測路徑（YOLO + Depth 串接）─────────────
@@ -73,6 +81,7 @@ def main():
         model(frame, verbose=False)
 
     times = measure(run_full_detect)
+    avg_combined_ms = statistics.mean(times)
     print(f"  YOLO + Depth 合計：{fmt(times)}")
 
     # ── Layer 3: Ollama Gemma 3 1B ────────────────────────
@@ -90,6 +99,7 @@ def main():
             )
 
         times = measure(run_ollama, runs=3)  # LLM 慢，只跑 3 次
+        avg_ollama_ms = statistics.mean(times)
         print(f"  Ollama gemma3:1b 推論：{fmt(times)}")
     except Exception as e:
         print(f"  ⚠️  Ollama 跳過（{e}）")
@@ -110,22 +120,26 @@ def main():
                 )
 
             times = measure(run_gemini, runs=3)
+            avg_gemini_ms = statistics.mean(times)
             print(f"  Gemini 2.0 Flash：{fmt(times)}")
         except Exception as e:
             print(f"  ⚠️  Gemini 跳過（{e}）")
     else:
         print("  ⚠️  GEMINI_API_KEY 未設定，跳過")
 
-    # ── 摘要 ──────────────────────────────────────────────
+    # ── 摘要（引用本次實測值）─────────────────────────────
+    def _s(v):
+        return f"{v:>5.0f}ms" if v is not None else "skipped"
+
     print("\n" + "=" * 55)
-    print("  投資人看的重點數字（平均值）")
+    print("  投資人看的重點數字（本次實測平均值）")
     print("=" * 55)
-    print("  YOLO26s 偵測              avg  76ms  全離線（M1）")
-    print("  DepthAnything V2 Small    avg 326ms  全離線（M1）")
-    print("  YOLO + Depth 合計         avg 549ms  全離線（M1）")
-    print("  Layer 1 say 播報          +~50ms     全離線")
-    print("  Layer 2 Gemini Flash      ~500ms     需網路")
-    print("  Layer 3 Gemma 3 1B (1B)   ~3-5s      全離線")
+    print(f"  YOLO26s 偵測              avg {_s(avg_yolo_ms)}  全離線（M1）")
+    print(f"  DepthAnything V2 Small    avg {_s(avg_depth_ms)}  全離線（M1）")
+    print(f"  YOLO + Depth 合計         avg {_s(avg_combined_ms)}  全離線（M1）")
+    print("  Layer 1 say 播報           + ~50ms    全離線")
+    print(f"  Layer 2 Gemini Flash           {_s(avg_gemini_ms)}  需網路")
+    print(f"  Layer 3 Gemma 3 1B             {_s(avg_ollama_ms)}  全離線")
     print("  切離線後 Layer 3 自動接手，使用者 0 感知")
     print("=" * 55)
 
