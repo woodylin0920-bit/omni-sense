@@ -272,11 +272,24 @@ class OmniSensePipeline:
         from PIL import Image
 
         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        t_depth = time.perf_counter()
         depth_result = self.depth_pipe(pil_img)
+        depth_ms = (time.perf_counter() - t_depth) * 1000
         depth_map = depth_result["depth"]
 
         results = self.model(frame, verbose=False)
+
+        # 整理所有偵測（含非 HIGH_PRIORITY，用於 summary 行）
+        h, w = frame.shape[:2]
+        r0 = results[0]
+        spd = r0.speed  # preprocess / inference / postprocess (ms)
+
         detections = []
+        all_obj_parts = []
+        from collections import Counter
+        all_labels = [r0.names[int(b.cls)] for b in r0.boxes if float(b.conf) >= 0.4]
+        counts = Counter(all_labels)
+
         for r in results:
             for box in r.boxes:
                 conf = float(box.conf)
@@ -284,9 +297,29 @@ class OmniSensePipeline:
                     continue
                 label = r.names[int(box.cls)]
                 if label not in HIGH_PRIORITY_LABELS:
-                    continue  # 過濾靜態物
+                    continue
                 dist, depth_val = estimate_distance_depth(box, depth_map)
                 detections.append((label, dist, conf, depth_val))
+
+        # 組 summary 行：所有物件 + HIGH_PRIORITY 加距離標示
+        dist_map = {(d[0], i): d[1] for i, d in enumerate(detections)}
+        hp_dist: dict[str, list[str]] = {}
+        for label, dist, _, _ in detections:
+            hp_dist.setdefault(label, []).append(dist)
+
+        obj_parts = []
+        for label, cnt in counts.items():
+            if label in hp_dist:
+                dist_tags = "/".join(sorted(set(hp_dist[label])))
+                obj_parts.append(f"{cnt} {label}{'s' if cnt > 1 else ''}({dist_tags})")
+            else:
+                obj_parts.append(f"{cnt} {label}{'s' if cnt > 1 else ''}")
+        obj_str = ", ".join(obj_parts) if obj_parts else "no detections"
+
+        print(f"0: {h}x{w} {obj_str}, {spd['inference']:.1f}ms")
+        print(f"Speed: {spd['preprocess']:.1f}ms preprocess, {spd['inference']:.1f}ms inference, "
+              f"{spd['postprocess']:.1f}ms postprocess, {depth_ms:.1f}ms depth "
+              f"per image at shape (1, 3, {h}, {w})")
 
         dist_order = {"near": 0, "mid": 1, "far": 2, "unknown": 3}
         detections.sort(key=lambda x: (dist_order.get(x[1], 3), -x[2]))
