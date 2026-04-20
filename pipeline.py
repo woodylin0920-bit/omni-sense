@@ -322,8 +322,11 @@ class OmniSensePipeline:
               f"per image at shape (1, 3, {h}, {w})")
 
         # 畫框：YOLO 內建框 + 距離色彩疊加
-        annotated = r0.plot()  # YOLO 標準藍框 + label + conf
-        dist_color = {"near": (0, 0, 255), "mid": (0, 165, 255), "far": (0, 255, 0)}
+        # 先排序，才知道誰是第一個（要播報的）
+        dist_order = {"near": 0, "mid": 1, "far": 2, "unknown": 3}
+
+        # 收集 HIGH_PRIORITY 偵測並記住 box 物件
+        hp_boxes = []
         for r in results:
             for box in r.boxes:
                 if float(box.conf) < 0.4:
@@ -331,16 +334,31 @@ class OmniSensePipeline:
                 label = r.names[int(box.cls)]
                 if label not in HIGH_PRIORITY_LABELS:
                     continue
-                dist, _ = estimate_distance_depth(box, depth_map)
-                x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
-                color = dist_color.get(dist, (255, 255, 255))
-                cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 3)
-                cv2.putText(annotated, dist, (x1, y1 - 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                dist, depth_val = estimate_distance_depth(box, depth_map)
+                hp_boxes.append((label, dist, float(box.conf), depth_val, box))
+
+        hp_boxes.sort(key=lambda x: (dist_order.get(x[1], 3), -x[2]))
+
+        annotated = r0.plot()  # YOLO 標準藍框 + label + conf
+        dist_color = {"near": (0, 0, 255), "mid": (0, 165, 255), "far": (0, 255, 0)}
+
+        for i, (label, dist, conf, _, box) in enumerate(hp_boxes):
+            x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+            color = dist_color.get(dist, (255, 255, 255))
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 3)
+            cv2.putText(annotated, dist, (x1, y1 - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            if i == 0:
+                # 第一個（即將播報）：黃色粗框 + ★ 標記
+                cv2.rectangle(annotated, (x1 - 4, y1 - 4), (x2 + 4, y2 + 4),
+                              (0, 255, 255), 5)
+                cv2.putText(annotated, f"★ {label} ({dist})",
+                            (x1, y2 + 24),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
         self._last_annotated = annotated
 
-        dist_order = {"near": 0, "mid": 1, "far": 2, "unknown": 3}
-        detections.sort(key=lambda x: (dist_order.get(x[1], 3), -x[2]))
+        detections = [(l, d, c, dv) for l, d, c, dv, _ in hp_boxes]
         return detections
 
     def _annotate(self, frame):
