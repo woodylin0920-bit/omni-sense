@@ -92,6 +92,8 @@ PRIORITY_L3 = 3  # Ollama 描述（macOS say）
 _audio_lock = threading.Lock()
 _current_audio_proc = None
 _current_audio_priority = 99  # 99 = 無音訊播放中
+_current_audio_started = 0.0   # perf_counter 時戳，用於 TTL 判定
+AUDIO_MAX_TTL_SEC = 15.0       # say/afplay 若卡住超過此時間視為僵屍，強制回收
 
 
 def check_network():
@@ -115,7 +117,7 @@ def is_online() -> bool:
 
 # --- TTS ---
 def _stop_current_audio_unlocked():
-    global _current_audio_proc, _current_audio_priority
+    global _current_audio_proc, _current_audio_priority, _current_audio_started
     if _current_audio_proc is None:
         return
     if _current_audio_proc.poll() is None:
@@ -129,12 +131,27 @@ def _stop_current_audio_unlocked():
                 pass
     _current_audio_proc = None
     _current_audio_priority = 99
+    _current_audio_started = 0.0
 
 
 def _register_audio_proc_unlocked(proc, priority: int):
-    global _current_audio_proc, _current_audio_priority
+    global _current_audio_proc, _current_audio_priority, _current_audio_started
     _current_audio_proc = proc
     _current_audio_priority = priority
+    _current_audio_started = time.perf_counter()
+
+
+def _audio_alive_unlocked() -> bool:
+    """當前音訊是否仍有效在播。若 proc 卡住超過 TTL，視為僵屍並強制回收。"""
+    if _current_audio_proc is None:
+        return False
+    if _current_audio_proc.poll() is not None:
+        return False
+    if time.perf_counter() - _current_audio_started > AUDIO_MAX_TTL_SEC:
+        print(f"[TTS] 音訊卡住 > {AUDIO_MAX_TTL_SEC}s，強制回收")
+        _stop_current_audio_unlocked()
+        return False
+    return True
 
 
 def speak_local(text: str, lang: str = "zh", priority: int = PRIORITY_L3):
@@ -144,9 +161,8 @@ def speak_local(text: str, lang: str = "zh", priority: int = PRIORITY_L3):
     """
     voice = SAY_VOICE.get(lang, SAY_VOICE["zh"])
     with _audio_lock:
-        if _current_audio_proc is not None and _current_audio_proc.poll() is None:
-            if priority > _current_audio_priority:
-                return  # 當前音訊優先級更高，不搶
+        if _audio_alive_unlocked() and priority > _current_audio_priority:
+            return  # 當前音訊優先級更高，不搶
         _stop_current_audio_unlocked()
         proc = subprocess.Popen(
             ["say", "-v", voice, "-r", "200", text],
@@ -181,10 +197,9 @@ def speak_edge(text: str, lang: str = "zh", priority: int = PRIORITY_L2) -> bool
     try:
         asyncio.run(_run())
         with _audio_lock:
-            if _current_audio_proc is not None and _current_audio_proc.poll() is None:
-                if priority > _current_audio_priority:
-                    Path(tmp_path).unlink(missing_ok=True)
-                    return False  # 不搶占更高優先級
+            if _audio_alive_unlocked() and priority > _current_audio_priority:
+                Path(tmp_path).unlink(missing_ok=True)
+                return False  # 不搶占更高優先級
             _stop_current_audio_unlocked()
             proc = subprocess.Popen(
                 ["afplay", tmp_path],
@@ -231,19 +246,6 @@ def estimate_distance_depth(box, depth_map):
     elif ratio < 0.65:
         return "mid", round(ratio, 2)
     return "far", round(ratio, 2)
-
-
-def estimate_distance_bbox(box, frame_h: int, frame_w: int):
-    """Fallback: bbox 面積比估距離（Depth 跳過時使用）。"""
-    x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
-    bbox_area = (x2 - x1) * (y2 - y1)
-    frame_area = frame_h * frame_w
-    ratio = bbox_area / frame_area if frame_area > 0 else 0.0
-    if ratio > 0.10:
-        return "near", None
-    elif ratio > 0.03:
-        return "mid", None
-    return "far", None
 
 
 # --- Layer 2: Gemini Flash ---
@@ -410,7 +412,9 @@ class OmniSensePipeline:
                 if depth_map is not None:
                     dist, depth_val = estimate_distance_depth(box, depth_map)
                 else:
-                    dist, depth_val = estimate_distance_bbox(box, h, w)
+                    # Depth 跳過時不用 bbox 估距離——大遠物 vs 小近物容易誤判。
+                    # 保守標記 unknown（3s cooldown）避免 bbox 假警示搶 0.5s near 頻率。
+                    dist, depth_val = "unknown", None
                 hp_boxes.append((label, dist, float(box.conf), depth_val, box))
 
         dist_order = {"near": 0, "mid": 1, "far": 2, "unknown": 3}
@@ -491,7 +495,7 @@ class OmniSensePipeline:
                 if self._bg_thread is None or not self._bg_thread.is_alive():
                     self._bg_thread = threading.Thread(
                         target=self._background_describe,
-                        args=(all_labels, t0, time.time()),
+                        args=(all_labels, t0, time.perf_counter()),
                         daemon=True,
                     )
                     self._bg_thread.start()
@@ -520,10 +524,13 @@ class OmniSensePipeline:
 
         if desc:
             # 描述回來太晚就丟棄，避免語音和目前畫面不同步
+            # 用 perf_counter（monotonic）避免 NTP / 手動改時間造成誤判
             age_limit = MAX_DESC_AGE_SEC.get(used_layer, 1.2)
-            if event_ts and (time.time() - event_ts > age_limit):
-                print(f"[Layer {used_layer}] 丟棄過期描述（{time.time() - event_ts:.1f}s > {age_limit}s）")
-                return
+            if event_ts is not None:
+                age = time.perf_counter() - event_ts
+                if age > age_limit:
+                    print(f"[Layer {used_layer}] 丟棄過期描述（{age:.1f}s > {age_limit}s）")
+                    return
             print(f"[Layer {used_layer}] {desc}")
             t_tts = time.perf_counter()
             if used_layer == 2 and is_online():
