@@ -374,7 +374,9 @@ class OmniSensePipeline:
 
     def process_frame(self, frame):
         """單幀處理：接 numpy BGR frame（cv2 預設格式）。"""
+        t0 = time.perf_counter()
         detections = self._detect(frame)
+        t_detect = (time.perf_counter() - t0) * 1000
 
         if not detections:
             return
@@ -389,40 +391,53 @@ class OmniSensePipeline:
         if self._should_alert(nearest_label, nearest_dist):
             templates = self._templates()
             text = templates.get(nearest_label, templates["default"])
-            print(f"[Layer 1] {text}")
+            t_say = time.perf_counter()
             speak_local(text, self.lang)
+            t_say_ms = (time.perf_counter() - t_say) * 1000
+            print(f"[Layer 1] {text}")
+            print(f"  ⏱ 偵測→播報：{t_detect:.0f}ms｜say 觸發：{t_say_ms:.0f}ms（語音在背景播放）")
             self._mark_alerted(nearest_label, nearest_dist)
 
             # Layer 2/3 背景補充描述
             all_labels = [d[0] for d in detections[:3]]
             self._bg_thread = threading.Thread(
                 target=self._background_describe,
-                args=(all_labels,),
+                args=(all_labels, t0),
                 daemon=True,
             )
             self._bg_thread.start()
 
-    def _background_describe(self, labels):
+    def _background_describe(self, labels, t0=None):
         """Layer 2 線上優先 → 失敗 / 離線 fallback 到 Layer 3。"""
         desc = ""
         used_layer = 0
         if is_online():
+            t = time.perf_counter()
             desc = gemini_describe(labels, lang=self.lang)
             if desc:
                 used_layer = 2
+                elapsed = (time.perf_counter() - t) * 1000
+                total = (time.perf_counter() - t0) * 1000 if t0 else 0
+                print(f"  ⏱ Layer 2 Gemini：{elapsed:.0f}ms｜frame→播報總計：{total:.0f}ms")
 
         if not desc and self._ollama_ready:
+            t = time.perf_counter()
             desc = ollama_describe(labels, lang=self.lang)
             if desc:
                 used_layer = 3
+                elapsed = (time.perf_counter() - t) * 1000
+                total = (time.perf_counter() - t0) * 1000 if t0 else 0
+                print(f"  ⏱ Layer 3 Ollama：{elapsed:.0f}ms｜frame→播報總計：{total:.0f}ms")
 
         if desc:
             print(f"[Layer {used_layer}] {desc}")
+            t_tts = time.perf_counter()
             if used_layer == 2 and is_online():
                 speak_edge(desc, lang=self.lang)
+                print(f"  ⏱ Layer 2 TTS (edge-tts)：{(time.perf_counter()-t_tts)*1000:.0f}ms 觸發")
             else:
-                # Layer 3 離線一定用 speak_local（edge-tts 需網路）
                 speak_local(desc, lang=self.lang)
+                print(f"  ⏱ Layer 3 TTS (say)：{(time.perf_counter()-t_tts)*1000:.0f}ms 觸發")
 
     def process_stream(self, source):
         """攝影機或影片檔連續流。source 接 int (camera index) 或 str (檔案路徑)。
