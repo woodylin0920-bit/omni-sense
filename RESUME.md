@@ -4,6 +4,32 @@
 
 ---
 
+## 🔴 2026-04-21 重開機後第一件事
+
+發現 `import edge_tts` hang 住（追到 `aiohttp → attr` 這條 import 鏈），導致 pytest 在 `test_speak_edge_unique_tempfile` 卡死。
+
+**重開機後跑：**
+```bash
+cd ~/Desktop/omni-sense
+./venv/bin/pip install --force-reinstall attrs aiohttp
+./venv/bin/python -c "import edge_tts; print('ok')"   # 驗證 import 不 hang
+./venv/bin/pytest test_pipeline.py -v                 # 跑完整 13 tests
+```
+
+若 `import edge_tts` 仍 hang：
+```bash
+./venv/bin/pip install --force-reinstall edge-tts
+```
+
+測試都綠後，把 CodeX review 當下一步（Pattern ① 已 ready）：
+```bash
+git diff pipeline.py | codex exec "review this diff for bugs, edge cases, offline reliability concerns on M1 macOS"
+```
+
+當前狀態：pipeline.py 有 201 行 uncommitted diff，test_pipeline.py 有 51 行 uncommitted diff，docs/DESIGN.md 1 行 diff。**都沒 commit，環境重開後一樣。**
+
+---
+
 ## Resume Prompt
 
 > 我在繼續 omni-sense 這個專案（視障者離線導航 pipeline）。週末要 demo 給投資人看「技術可行性 + 速度」。

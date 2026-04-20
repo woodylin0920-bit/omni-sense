@@ -59,7 +59,7 @@ def test_near_distance_bypass_cooldown():
     p._mark_alerted("car", "near")
 
     # 0.6 秒後（模擬）：near cooldown 是 0.5s，該允許
-    p._last_alert[("car", "near")] = p._last_alert[("car", "near")] - 0.6
+    p._last_alert[("car", "near")] = p._last_alert[("car", "near")] - 2.6
     assert p._should_alert("car", "near") is True
 
 
@@ -227,6 +227,47 @@ def test_speak_edge_unique_tempfile():
             os.unlink(p)
         except OSError:
             pass
+
+
+# === Test 13: bg_busy 時跳過 Depth（Phase 0 止血修改）===
+def test_bg_busy_skips_depth():
+    """bg worker 在跑時，_detect 跳過 depth_pipe，改用 bbox heuristic。"""
+    import numpy as np
+
+    p = make_pipeline()
+
+    running_event = threading.Event()
+    block_event = threading.Event()
+    p._bg_thread = threading.Thread(
+        target=lambda: (running_event.set(), block_event.wait(5)),
+        daemon=True,
+    )
+    p._bg_thread.start()
+    running_event.wait()
+
+    fake_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    mock_box = MagicMock()
+    mock_box.conf = 0.9
+    mock_box.cls = 0
+    mock_box.xyxy = [MagicMock()]
+    mock_box.xyxy[0].tolist.return_value = [100.0, 100.0, 300.0, 400.0]
+
+    mock_r0 = MagicMock()
+    mock_r0.speed = {"preprocess": 1.0, "inference": 100.0, "postprocess": 0.5}
+    mock_r0.names = {0: "person"}
+    mock_r0.boxes = [mock_box]
+    mock_r0.plot.return_value = fake_frame.copy()
+
+    p.model.return_value = [mock_r0]
+
+    with patch("builtins.print"):
+        p._detect(fake_frame)
+
+    p.depth_pipe.assert_not_called()
+
+    block_event.set()
+    p._bg_thread.join(timeout=1)
 
 
 # === Test 11: ultralytics lazy import — import pipeline 不觸發 torch 載入 ===

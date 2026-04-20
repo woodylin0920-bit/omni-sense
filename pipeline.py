@@ -26,6 +26,7 @@ _WARMUP_IMG = _HERE / "bus.jpg"
 YOLO_MODEL = str(_HERE / "yolo26s.pt")
 OLLAMA_MODEL = "gemma3:1b"
 FRAME_STRIDE = 6  # 每 6 幀跑 1 次 pipeline（~5fps 分析 @ 30fps 輸入）
+MAX_DESC_AGE_SEC = {2: 1.2, 3: 20.0}  # Layer 2 (Gemini ~500ms) / Layer 3 (Gemma3 cold start 18s + buffer)
 
 # 近/中/遠各自的 cooldown（秒）— 近距離車輛不能被抑制
 COOLDOWN_BY_DIST = {"near": 0.5, "mid": 1.5, "far": 3.0, "unknown": 3.0}
@@ -82,6 +83,16 @@ GEMINI_ENDPOINT_PORT = 443
 _network_ok = False
 _last_check = 0.0
 
+# 單一語音通道 + 優先級：Layer 1 (緊急警告) 絕不可被打斷
+# priority 越小越優先。新播報若 priority > current，則跳過不搶。
+PRIORITY_L1 = 1  # 緊急警告（macOS say）
+PRIORITY_L2 = 2  # Gemini 描述（edge-tts）
+PRIORITY_L3 = 3  # Ollama 描述（macOS say）
+
+_audio_lock = threading.Lock()
+_current_audio_proc = None
+_current_audio_priority = 99  # 99 = 無音訊播放中
+
 
 def check_network():
     """直接測 Gemini API endpoint 是否可達。2s timeout。"""
@@ -103,18 +114,52 @@ def is_online() -> bool:
 
 
 # --- TTS ---
-def speak_local(text: str, lang: str = "zh"):
-    """Layer 1 / Layer 3 本地 TTS（macOS say）。離線可用。"""
+def _stop_current_audio_unlocked():
+    global _current_audio_proc, _current_audio_priority
+    if _current_audio_proc is None:
+        return
+    if _current_audio_proc.poll() is None:
+        try:
+            _current_audio_proc.terminate()
+            _current_audio_proc.wait(timeout=0.2)
+        except Exception:
+            try:
+                _current_audio_proc.kill()
+            except Exception:
+                pass
+    _current_audio_proc = None
+    _current_audio_priority = 99
+
+
+def _register_audio_proc_unlocked(proc, priority: int):
+    global _current_audio_proc, _current_audio_priority
+    _current_audio_proc = proc
+    _current_audio_priority = priority
+
+
+def speak_local(text: str, lang: str = "zh", priority: int = PRIORITY_L3):
+    """Layer 1 / Layer 3 本地 TTS（macOS say）。離線可用。
+    priority=PRIORITY_L1 為緊急警告（預設 L3 為描述）。
+    若當前音訊 priority 更高，則跳過本次播報（不搶占）。
+    """
     voice = SAY_VOICE.get(lang, SAY_VOICE["zh"])
-    subprocess.Popen(
-        ["say", "-v", voice, "-r", "200", text],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    with _audio_lock:
+        if _current_audio_proc is not None and _current_audio_proc.poll() is None:
+            if priority > _current_audio_priority:
+                return  # 當前音訊優先級更高，不搶
+        _stop_current_audio_unlocked()
+        proc = subprocess.Popen(
+            ["say", "-v", voice, "-r", "200", text],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        _register_audio_proc_unlocked(proc, priority)
 
 
-def speak_edge(text: str, lang: str = "zh"):
-    """Layer 2 edge-tts，自然語音，但需要網路。每次產生唯一暫存檔避免並發覆蓋。"""
+def speak_edge(text: str, lang: str = "zh", priority: int = PRIORITY_L2) -> bool:
+    """Layer 2 edge-tts，自然語音，但需要網路。每次產生唯一暫存檔避免並發覆蓋。
+    回傳 True 表示已觸發播放；False 表示失敗或被更高優先級音訊擋下（呼叫端應 fallback）。
+    """
     import asyncio
     import edge_tts
 
@@ -135,20 +180,37 @@ def speak_edge(text: str, lang: str = "zh"):
 
     try:
         asyncio.run(_run())
-        proc = subprocess.Popen(
-            ["afplay", tmp_path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        # 播放完後刪除暫存檔（daemon thread，不阻塞主流程）
+        with _audio_lock:
+            if _current_audio_proc is not None and _current_audio_proc.poll() is None:
+                if priority > _current_audio_priority:
+                    Path(tmp_path).unlink(missing_ok=True)
+                    return False  # 不搶占更高優先級
+            _stop_current_audio_unlocked()
+            proc = subprocess.Popen(
+                ["afplay", tmp_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            _register_audio_proc_unlocked(proc, priority)
+
+        # 播放完後刪除暫存檔；若仍是目前音訊 proc 再清空指標
         def _cleanup(path: str, p):
-            p.wait()
-            Path(path).unlink(missing_ok=True)
+            global _current_audio_proc, _current_audio_priority
+            try:
+                p.wait()
+            finally:
+                Path(path).unlink(missing_ok=True)
+                with _audio_lock:
+                    if _current_audio_proc is p:
+                        _current_audio_proc = None
+                        _current_audio_priority = 99
         threading.Thread(target=_cleanup, args=(tmp_path, proc), daemon=True).start()
+        return True
     except Exception as e:
         Path(tmp_path).unlink(missing_ok=True)
         print(f"[TTS] edge-tts 失敗（{e}），改用本地 say")
-        speak_local(text, lang)
+        speak_local(text, lang, priority=priority)
+        return False
 
 
 # --- 距離估算 ---
@@ -169,6 +231,19 @@ def estimate_distance_depth(box, depth_map):
     elif ratio < 0.65:
         return "mid", round(ratio, 2)
     return "far", round(ratio, 2)
+
+
+def estimate_distance_bbox(box, frame_h: int, frame_w: int):
+    """Fallback: bbox 面積比估距離（Depth 跳過時使用）。"""
+    x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+    bbox_area = (x2 - x1) * (y2 - y1)
+    frame_area = frame_h * frame_w
+    ratio = bbox_area / frame_area if frame_area > 0 else 0.0
+    if ratio > 0.10:
+        return "near", None
+    elif ratio > 0.03:
+        return "mid", None
+    return "far", None
 
 
 # --- Layer 2: Gemini Flash ---
@@ -209,7 +284,7 @@ def ollama_describe(objects, lang: str = "zh") -> str:
         resp = ollama.generate(
             model=OLLAMA_MODEL,
             prompt=prompt,
-            options={"num_predict": 40, "temperature": 0.3, "keep_alive": "10m"},
+            options={"num_predict": 16, "temperature": 0.3, "keep_alive": "10m"},
         )
         return resp["response"].strip()
     except Exception as e:
@@ -238,6 +313,7 @@ class OmniSensePipeline:
         self.depth_pipe = hf_pipeline(
             "depth-estimation",
             model="depth-anything/Depth-Anything-V2-Small-hf",
+            local_files_only=True,
         )
         self.depth_pipe(Image.open(_WARMUP_IMG))  # warm up
 
@@ -279,73 +355,50 @@ class OmniSensePipeline:
         return TEMPLATES[self.lang]
 
     def _detect(self, frame):
-        """YOLO + DepthAnything → 排序後的 detections list。
+        """YOLO first → skip Depth if no HIGH_PRIORITY → faster Layer 1 + less CPU for Ollama.
         Returns: list of (label, dist, conf, depth_val)
         """
         import cv2
         from PIL import Image
+        from collections import Counter
 
-        # 縮到寬度 640px，保持比例 — 大幅降低 YOLO + Depth 延遲
+        # 縮到寬度 640px，保持比例
         h0, w0 = frame.shape[:2]
         if w0 > 640:
             scale = 640 / w0
             frame = cv2.resize(frame, (640, int(h0 * scale)))
 
-        pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        t_depth = time.perf_counter()
-        depth_result = self.depth_pipe(pil_img)
-        depth_ms = (time.perf_counter() - t_depth) * 1000
-        depth_map = depth_result["depth"]
-
+        # ── Step 1: YOLO（快，~76-200ms warm）──────────────────
         results = self.model(frame, verbose=False)
-
-        # 整理所有偵測（含非 HIGH_PRIORITY，用於 summary 行）
         h, w = frame.shape[:2]
         r0 = results[0]
-        spd = r0.speed  # preprocess / inference / postprocess (ms)
+        spd = r0.speed
 
-        detections = []
-        all_obj_parts = []
-        from collections import Counter
         all_labels = [r0.names[int(b.cls)] for b in r0.boxes if float(b.conf) >= 0.4]
+        hp_raw = [lb for lb in all_labels if lb in HIGH_PRIORITY_LABELS]
         counts = Counter(all_labels)
 
-        for r in results:
-            for box in r.boxes:
-                conf = float(box.conf)
-                if conf < 0.4:
-                    continue
-                label = r.names[int(box.cls)]
-                if label not in HIGH_PRIORITY_LABELS:
-                    continue
-                dist, depth_val = estimate_distance_depth(box, depth_map)
-                detections.append((label, dist, conf, depth_val))
+        # ── Step 2: 沒有 HIGH_PRIORITY → 跳過 Depth，直接回傳 ──
+        if not hp_raw:
+            print(f"0: {h}x{w} no detections, {spd['inference']:.1f}ms")
+            print(f"Speed: {spd['preprocess']:.1f}ms preprocess, {spd['inference']:.1f}ms inference, "
+                  f"{spd['postprocess']:.1f}ms postprocess, 0ms depth (skipped)")
+            self._last_annotated = r0.plot()
+            return []
 
-        # 組 summary 行：所有物件 + HIGH_PRIORITY 加距離標示
-        dist_map = {(d[0], i): d[1] for i, d in enumerate(detections)}
-        hp_dist: dict[str, list[str]] = {}
-        for label, dist, _, _ in detections:
-            hp_dist.setdefault(label, []).append(dist)
+        # ── Step 3: 有 HIGH_PRIORITY → 才跑 Depth（Ollama 推理中則跳過）──
+        bg_busy = self._bg_thread is not None and self._bg_thread.is_alive()
 
-        obj_parts = []
-        for label, cnt in counts.items():
-            if label in hp_dist:
-                dist_tags = "/".join(sorted(set(hp_dist[label])))
-                obj_parts.append(f"{cnt} {label}{'s' if cnt > 1 else ''}({dist_tags})")
-            else:
-                obj_parts.append(f"{cnt} {label}{'s' if cnt > 1 else ''}")
-        obj_str = ", ".join(obj_parts) if obj_parts else "no detections"
+        if bg_busy:
+            depth_map = None
+            depth_ms = 0.0
+        else:
+            pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            t_depth = time.perf_counter()
+            depth_result = self.depth_pipe(pil_img)
+            depth_ms = (time.perf_counter() - t_depth) * 1000
+            depth_map = depth_result["depth"]
 
-        print(f"0: {h}x{w} {obj_str}, {spd['inference']:.1f}ms")
-        print(f"Speed: {spd['preprocess']:.1f}ms preprocess, {spd['inference']:.1f}ms inference, "
-              f"{spd['postprocess']:.1f}ms postprocess, {depth_ms:.1f}ms depth "
-              f"per image at shape (1, 3, {h}, {w})")
-
-        # 畫框：YOLO 內建框 + 距離色彩疊加
-        # 先排序，才知道誰是第一個（要播報的）
-        dist_order = {"near": 0, "mid": 1, "far": 2, "unknown": 3}
-
-        # 收集 HIGH_PRIORITY 偵測並記住 box 物件
         hp_boxes = []
         for r in results:
             for box in r.boxes:
@@ -354,14 +407,34 @@ class OmniSensePipeline:
                 label = r.names[int(box.cls)]
                 if label not in HIGH_PRIORITY_LABELS:
                     continue
-                dist, depth_val = estimate_distance_depth(box, depth_map)
+                if depth_map is not None:
+                    dist, depth_val = estimate_distance_depth(box, depth_map)
+                else:
+                    dist, depth_val = estimate_distance_bbox(box, h, w)
                 hp_boxes.append((label, dist, float(box.conf), depth_val, box))
 
+        dist_order = {"near": 0, "mid": 1, "far": 2, "unknown": 3}
         hp_boxes.sort(key=lambda x: (dist_order.get(x[1], 3), -x[2]))
 
-        annotated = r0.plot()  # YOLO 標準藍框 + label + conf
-        dist_color = {"near": (0, 0, 255), "mid": (0, 165, 255), "far": (0, 255, 0)}
+        # summary 行
+        hp_dist: dict[str, list[str]] = {}
+        for label, dist, _, _, _ in hp_boxes:
+            hp_dist.setdefault(label, []).append(dist)
+        obj_parts = []
+        for label, cnt in counts.items():
+            if label in hp_dist:
+                dist_tags = "/".join(sorted(set(hp_dist[label])))
+                obj_parts.append(f"{cnt} {label}{'s' if cnt > 1 else ''}({dist_tags})")
+            else:
+                obj_parts.append(f"{cnt} {label}{'s' if cnt > 1 else ''}")
+        print(f"0: {h}x{w} {', '.join(obj_parts)}, {spd['inference']:.1f}ms")
+        depth_note = "skipped (ollama_busy)" if bg_busy else f"per image at shape (1, 3, {h}, {w})"
+        print(f"Speed: {spd['preprocess']:.1f}ms preprocess, {spd['inference']:.1f}ms inference, "
+              f"{spd['postprocess']:.1f}ms postprocess, {depth_ms:.1f}ms depth {depth_note}")
 
+        # 畫框
+        annotated = r0.plot()
+        dist_color = {"near": (0, 0, 255), "mid": (0, 165, 255), "far": (0, 255, 0)}
         for i, (label, dist, conf, _, box) in enumerate(hp_boxes):
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
             color = dist_color.get(dist, (255, 255, 255))
@@ -369,7 +442,6 @@ class OmniSensePipeline:
             cv2.putText(annotated, dist, (x1, y1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
             if i == 0:
-                # 第一個（即將播報）：黃色粗框 + ★ 標記
                 cv2.rectangle(annotated, (x1 - 4, y1 - 4), (x2 + 4, y2 + 4),
                               (0, 255, 255), 5)
                 cv2.putText(annotated, f"★ {label} ({dist})",
@@ -377,9 +449,7 @@ class OmniSensePipeline:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
         self._last_annotated = annotated
-
-        detections = [(l, d, c, dv) for l, d, c, dv, _ in hp_boxes]
-        return detections
+        return [(l, d, c, dv) for l, d, c, dv, _ in hp_boxes]
 
     def _annotate(self, frame):
         """只畫 YOLO 框（不跑 Depth），用於 stream 顯示。內部快取最新結果。"""
@@ -407,7 +477,7 @@ class OmniSensePipeline:
             templates = self._templates()
             text = templates.get(nearest_label, templates["default"])
             t_say = time.perf_counter()
-            speak_local(text, self.lang)
+            speak_local(text, self.lang, priority=PRIORITY_L1)
             t_say_ms = (time.perf_counter() - t_say) * 1000
             print(f"[Layer 1] {text}")
             print(f"  ⏱ 偵測→播報：{t_detect:.0f}ms｜say 觸發：{t_say_ms:.0f}ms（語音在背景播放）")
@@ -421,12 +491,12 @@ class OmniSensePipeline:
                 if self._bg_thread is None or not self._bg_thread.is_alive():
                     self._bg_thread = threading.Thread(
                         target=self._background_describe,
-                        args=(all_labels, t0),
+                        args=(all_labels, t0, time.time()),
                         daemon=True,
                     )
                     self._bg_thread.start()
 
-    def _background_describe(self, labels, t0=None):
+    def _background_describe(self, labels, t0=None, event_ts=None):
         """Layer 2 線上優先 → 失敗 / 離線 fallback 到 Layer 3。"""
         desc = ""
         used_layer = 0
@@ -449,13 +519,23 @@ class OmniSensePipeline:
                 print(f"  ⏱ Layer 3 Ollama：{elapsed:.0f}ms｜frame→播報總計：{total:.0f}ms")
 
         if desc:
+            # 描述回來太晚就丟棄，避免語音和目前畫面不同步
+            age_limit = MAX_DESC_AGE_SEC.get(used_layer, 1.2)
+            if event_ts and (time.time() - event_ts > age_limit):
+                print(f"[Layer {used_layer}] 丟棄過期描述（{time.time() - event_ts:.1f}s > {age_limit}s）")
+                return
             print(f"[Layer {used_layer}] {desc}")
             t_tts = time.perf_counter()
             if used_layer == 2 and is_online():
-                speak_edge(desc, lang=self.lang)
-                print(f"  ⏱ Layer 2 TTS (edge-tts)：{(time.perf_counter()-t_tts)*1000:.0f}ms 觸發")
+                ok = speak_edge(desc, lang=self.lang, priority=PRIORITY_L2)
+                if ok:
+                    print(f"  ⏱ Layer 2 TTS (edge-tts)：{(time.perf_counter()-t_tts)*1000:.0f}ms 觸發")
+                else:
+                    # edge-tts 被 L1 擋下或失敗；fallback 到本地 say（但仍 L2 優先級，不搶 L1）
+                    speak_local(desc, lang=self.lang, priority=PRIORITY_L2)
+                    print(f"  ⏱ Layer 2 TTS fallback (say)：{(time.perf_counter()-t_tts)*1000:.0f}ms 觸發")
             else:
-                speak_local(desc, lang=self.lang)
+                speak_local(desc, lang=self.lang, priority=PRIORITY_L3)
                 print(f"  ⏱ Layer 3 TTS (say)：{(time.perf_counter()-t_tts)*1000:.0f}ms 觸發")
 
     def process_stream(self, source):

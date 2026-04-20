@@ -4,6 +4,7 @@
 **Date:** 2026-04-20
 **Branch:** omni-sense-layer3 (pre-git)
 **Status:** Design draft — produced via /office-hours, feeding into /plan-eng-review
+**Implementation process note:** Before coding, Claude ran the `gstack` skill for planning/alternatives, then implementation followed the selected approach.
 **Project:** `~/Desktop/omni-sense/` (視障者導航 pipeline)
 
 ---
