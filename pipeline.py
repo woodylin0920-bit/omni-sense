@@ -405,6 +405,14 @@ class OmniSensePipeline:
 
     def _background_describe(self, labels):
         """Layer 2 線上優先 → 失敗 / 離線 fallback 到 Layer 3。"""
+        try:
+            self._background_describe_inner(labels)
+        except Exception as e:
+            import traceback
+            print(f"[BG ERROR] {e}", flush=True)
+            traceback.print_exc()
+
+    def _background_describe_inner(self, labels):
         desc = ""
         used_layer = 0
         print(f"[BG] online={is_online()} ollama_ready={self._ollama_ready}", flush=True)
