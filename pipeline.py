@@ -162,13 +162,12 @@ def estimate_distance_depth(box, depth_map):
 # --- Layer 2: Gemini Flash ---
 def gemini_describe(objects, lang: str = "zh") -> str:
     """雲端 LLM 場景描述。失敗回空字串。"""
+    import os
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return ""
     try:
         from google import genai
-        import os
-
-        api_key = os.environ.get("GEMINI_API_KEY", "")
-        if not api_key:
-            return ""
         client = genai.Client(api_key=api_key)
         lang_name = {"zh": "繁體中文", "en": "English", "ja": "日本語"}.get(lang, "繁體中文")
         prompt = (
