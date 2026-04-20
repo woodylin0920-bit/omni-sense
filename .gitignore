@@ -17,6 +17,9 @@ env/
 .idea/
 .cursor/
 
+# Claude Code local overrides (personal, not team-wide)
+.claude/settings.local.json
+
 # macOS
 .DS_Store
 

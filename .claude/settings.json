@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && { echo '=== RESUME.md ==='; cat RESUME.md 2>/dev/null | head -30; echo '=== ollama gemma3 ==='; command -v ollama >/dev/null 2>&1 && (ollama list 2>/dev/null | grep -i gemma3 || echo '(not found)') || echo '(ollama not installed)'; echo '=== recent commits ==='; git log --oneline -5; } 2>/dev/null"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "file=$(jq -r '.tool_input.file_path // empty'); echo \"$file\" | grep -qE '(pipeline|test_pipeline)\\.py$' || exit 0; pytest=\"$CLAUDE_PROJECT_DIR/venv/bin/pytest\"; [ -x \"$pytest\" ] && \"$pytest\" \"$CLAUDE_PROJECT_DIR/test_pipeline.py\" -x --tb=short 2>&1 | tail -15 || echo \"(pytest not found at $pytest — run: python -m venv venv && venv/bin/pip install pytest)\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && changed=$(git status --porcelain 2>/dev/null | grep -cE '(pipeline|test_pipeline)\\.py'); resume=$(git status --porcelain 2>/dev/null | grep -cE 'RESUME\\.md'); if [ \"${changed:-0}\" -gt 0 ] && [ \"${resume:-0}\" -eq 0 ]; then echo '{\"systemMessage\":\"pipeline changed but RESUME.md not updated — consider updating RESUME.md before ending session\"}'; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
