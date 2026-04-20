@@ -404,29 +404,15 @@ class OmniSensePipeline:
 
     def _background_describe(self, labels):
         """Layer 2 線上優先 → 失敗 / 離線 fallback 到 Layer 3。"""
-        try:
-            self._background_describe_inner(labels)
-        except Exception as e:
-            import traceback
-            print(f"[BG ERROR] {e}", flush=True)
-            traceback.print_exc()
-
-    def _background_describe_inner(self, labels):
         desc = ""
         used_layer = 0
-        print(f"[BG] online={is_online()} ollama_ready={self._ollama_ready}", flush=True)
         if is_online():
-            t = time.perf_counter()
             desc = gemini_describe(labels, lang=self.lang)
-            print(f"[Layer 2 耗時] {(time.perf_counter()-t)*1000:.0f}ms → {'有結果' if desc else '無結果'}", flush=True)
             if desc:
                 used_layer = 2
 
         if not desc and self._ollama_ready:
-            t = time.perf_counter()
-            print("[Layer 3 開始]", flush=True)
             desc = ollama_describe(labels, lang=self.lang)
-            print(f"[Layer 3 耗時] {(time.perf_counter()-t)*1000:.0f}ms", flush=True)
             if desc:
                 used_layer = 3
 
