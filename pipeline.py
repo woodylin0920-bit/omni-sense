@@ -408,12 +408,17 @@ class OmniSensePipeline:
         desc = ""
         used_layer = 0
         if is_online():
+            t = time.perf_counter()
             desc = gemini_describe(labels, lang=self.lang)
+            print(f"[Layer 2 耗時] {(time.perf_counter()-t)*1000:.0f}ms → {'有結果' if desc else '無結果（無 key 或失敗）'}")
             if desc:
                 used_layer = 2
 
         if not desc and self._ollama_ready:
+            t = time.perf_counter()
+            print("[Layer 3 開始]")
             desc = ollama_describe(labels, lang=self.lang)
+            print(f"[Layer 3 耗時] {(time.perf_counter()-t)*1000:.0f}ms")
             if desc:
                 used_layer = 3
 
