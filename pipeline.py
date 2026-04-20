@@ -372,11 +372,12 @@ class OmniSensePipeline:
 
             # Layer 2/3 背景補充描述
             all_labels = [d[0] for d in detections[:3]]
-            threading.Thread(
+            self._bg_thread = threading.Thread(
                 target=self._background_describe,
                 args=(all_labels,),
-                daemon=True,
-            ).start()
+                daemon=False,
+            )
+            self._bg_thread.start()
 
     def _background_describe(self, labels):
         """Layer 2 線上優先 → 失敗 / 離線 fallback 到 Layer 3。"""
@@ -475,13 +476,15 @@ def main():
         if frame is None:
             raise SystemExit(f"無法讀取圖片：{source}")
         pipe.process_frame(frame)
-        # 顯示畫框結果視窗
+        # 顯示畫框結果視窗（按任意鍵關閉，但等 Layer 2/3 跑完）
         display = getattr(pipe, "_last_annotated", frame)
         cv2.imshow("omni-sense", display)
-        print("按任意鍵關閉視窗...")
-        cv2.waitKey(0)
+        bg = getattr(pipe, "_bg_thread", None)
+        if bg and bg.is_alive():
+            print("等待 Layer 2/3 回應中（最多 15 秒）...")
+            bg.join(timeout=15)
+        cv2.waitKey(1)
         cv2.destroyAllWindows()
-        time.sleep(2)  # 等背景 Layer 2/3 播完
         return
 
     # 攝影機或影片：用 process_stream
