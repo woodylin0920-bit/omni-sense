@@ -10,7 +10,7 @@
 
 ## TL;DR
 
-在現有 3 層 pipeline 的 Layer 3 插入本地 Ollama + Gemma 3 4B，離線時接手生成多語言場景描述。目標：週末 demo 跑得動 2-3 種語言、延遲 < 4s、無需網路的完整導航體驗。差異化定位：**離線 = 成本 + 延遲優勢**（相對 Biped.ai / Seeing AI）。
+在現有 3 層 pipeline 的 Layer 3 插入本地 Ollama + Gemma 3 1B，離線時接手生成多語言場景描述。目標：週末 demo 跑得動 2-3 種語言、延遲 < 4s、無需網路的完整導航體驗。差異化定位：**離線 = 成本 + 延遲優勢**（相對 Biped.ai / Seeing AI）。
 
 ---
 
@@ -89,7 +89,7 @@
 投資人想確認「技術上能不能完成識別 + 本地 AI 串接」。Demo 必須 show：
 1. YOLO 即時辨識跑得動（M 系列 Mac 攝影機 30fps）
 2. DepthAnything 深度估算準確（距離分級 near/mid/far）
-3. Layer 3 本地 Gemma 3 4B 生成多語言場景描述
+3. Layer 3 本地 Gemma 3 1B 生成多語言場景描述
 4. Online → Offline 無縫切換
 5. 語音播報延遲 < 4s
 
@@ -98,7 +98,7 @@
 ## Premises（Phase 3 — agreed）
 
 1. ✅ **差異化是「全離線 + 隱私」的成本/延遲優勢**（不是純隱私，不是 B2B 軍醫金融）
-2. ✅ **Layer 3 採 Ollama + Gemma 3 4B**（多語言是 Gemma 3 官方強項）
+2. ✅ **Layer 3 採 Ollama + Gemma 3 1B**（多語言是 Gemma 3 官方強項）
 3. ✅ **週末 demo 優先於完整架構**，user research 延後 1 週
 4. ✅ **hybrid 架構保留**（Layer 2 Gemini 仍在，Layer 3 只在離線啟用）
 
@@ -142,7 +142,7 @@ Cons:
 
 ### APPROACH C: 多模型比較（暫不選）
 
-同時支援 Qwen 2.5 3B / Gemma 3 4B / Llama 3.2，用 CLI flag 切換。
+同時支援 Qwen 2.5 3B / Gemma 3 1B / Llama 3.2，用 CLI flag 切換。
 
 ```
 Effort:  L（CC+gstack ~4h / human ~2 天）
@@ -163,7 +163,7 @@ Risk:    High — 週末時程來不及
 ```python
 # pipeline.py
 def ollama_describe(labels: list[str], lang: str = "zh") -> str:
-    """Layer 3: 本地 Gemma 3 4B 生成場景描述。"""
+    """Layer 3: 本地 Gemma 3 1B 生成場景描述。"""
     import ollama
     prompt_map = {
         "zh": f"視障導航助理。用一句話（15字以內）告訴視障者：{', '.join(labels)}。用繁體中文。",
@@ -172,7 +172,7 @@ def ollama_describe(labels: list[str], lang: str = "zh") -> str:
     }
     try:
         resp = ollama.generate(
-            model="gemma3:4b",
+            model="gemma3:1b",
             prompt=prompt_map.get(lang, prompt_map["zh"]),
             options={"num_predict": 40, "temperature": 0.3},
         )
@@ -210,7 +210,7 @@ def __init__(self):
     print("Warm up Ollama Gemma 3...")
     try:
         import ollama
-        ollama.generate(model="gemma3:4b", prompt="OK", options={"num_predict": 1})
+        ollama.generate(model="gemma3:1b", prompt="OK", options={"num_predict": 1})
         self._ollama_ready = True
     except Exception as e:
         print(f"Ollama warm up 失敗（離線 fallback 不可用）: {e}")
@@ -242,14 +242,14 @@ def __init__(self):
 
 ## Performance Targets
 
-| 階段 | 目標延遲 | 實測（需測） |
+| 階段 | 目標延遲 | 實測（M1 Air）|
 |------|---------|-------------|
-| YOLO 偵測（單幀） | < 50ms | ? (M-series) |
-| DepthAnything 估算 | < 200ms | ? |
-| Layer 1 say 播報 | < 300ms | ✅ 目前 OK |
-| Layer 3 Ollama 首 token | < 1s | ? (需 warm up) |
-| Layer 3 完整描述（15字） | < 3s | ? |
-| Online → Offline 切換 | < 1s（感知無縫） | ? |
+| YOLO 偵測（單幀） | < 100ms | ✅ avg **70ms** |
+| DepthAnything 估算 | < 500ms | ✅ avg **326ms** |
+| YOLO + Depth 合計 | < 600ms | ✅ avg **549ms** |
+| Layer 1 say 播報 | < 300ms | ✅ ~50ms（本地 subprocess）|
+| Layer 3 Ollama 完整描述（15字）| < 5s | ⏳ 待測（gemma3:1b 已下載）|
+| Online → Offline 切換 | < 1s（感知無縫）| ✅ 已驗證（check_network 背景執行）|
 
 ---
 
