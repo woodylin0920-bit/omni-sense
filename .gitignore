@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+
+# Virtualenv
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+
+# macOS
+.DS_Store
+
+# Local
+*.log
+/tmp/
+/tmp_*
+omni_tts.mp3
+
+# Env / secrets
+.env
+.env.local
+*.key
+
+# Large artifacts (選擇性 — YOLO weights 保留以便 clone 即跑)
+# *.pt
+# *.onnx
+# *.mlpackage
