@@ -407,18 +407,19 @@ class OmniSensePipeline:
         """Layer 2 線上優先 → 失敗 / 離線 fallback 到 Layer 3。"""
         desc = ""
         used_layer = 0
+        print(f"[BG] online={is_online()} ollama_ready={self._ollama_ready}", flush=True)
         if is_online():
             t = time.perf_counter()
             desc = gemini_describe(labels, lang=self.lang)
-            print(f"[Layer 2 耗時] {(time.perf_counter()-t)*1000:.0f}ms → {'有結果' if desc else '無結果（無 key 或失敗）'}")
+            print(f"[Layer 2 耗時] {(time.perf_counter()-t)*1000:.0f}ms → {'有結果' if desc else '無結果'}", flush=True)
             if desc:
                 used_layer = 2
 
         if not desc and self._ollama_ready:
             t = time.perf_counter()
-            print("[Layer 3 開始]")
+            print("[Layer 3 開始]", flush=True)
             desc = ollama_describe(labels, lang=self.lang)
-            print(f"[Layer 3 耗時] {(time.perf_counter()-t)*1000:.0f}ms")
+            print(f"[Layer 3 耗時] {(time.perf_counter()-t)*1000:.0f}ms", flush=True)
             if desc:
                 used_layer = 3
 
