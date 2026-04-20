@@ -43,24 +43,27 @@
 
 ---
 
-## Market Landscape（Phase 2.75）
+## Market Landscape（2026-04 更新，NotebookLM 調研）
 
-| 產品 | Form Factor | AI 架構 | 價格 | 狀態 |
-|------|------------|--------|------|------|
-| **Biped.ai** 🎯 | 胸前 wearable | 預測 AI + haptic | ~$2-3K | 直接競品 |
-| OrCam MyEye | 眼鏡夾式 | OCR + 人臉 | $4,000 | **2025 退出視障市場** |
-| Envision Glasses | Google Glass | GPT + OCR | $3,500 | 活躍 |
-| WeWALK | 智能白杖 | 物件 + 語音助理 | ~$600 | 活躍 |
-| Seeing AI (MS) | iPhone app | 物件/場景/文字 | **免費** | 下載量最大 |
-| Be My Eyes | iPhone app | 真人 + GPT-4V | **免費** | 整合 OpenAI |
-| WOAD (學術) | 400g 眼鏡+手機 | cross-modal | 研究原型 | Nature 2025 |
+> 完整競品分析見 [docs/COMPETITIVE_ANALYSIS.md](COMPETITIVE_ANALYSIS.md)
 
-### 關鍵啟示
+| 產品 | Form Factor | AI 架構 | 網路依賴 | 價格 | 狀態 |
+|------|------------|--------|---------|------|------|
+| **Biped.ai NOA** 🎯 | 胸前背心 | Google Gemini + GPS | **必需** | 未公開（30天試用）| 活躍，12語言，2025持續更新 |
+| OrCam MyEye | 眼鏡夾式 | OCR + 人臉（本地）| 不需 | $4,000（已停售）| **⚠️ 2024-2025 關閉視障部門，估值 $1.5B→$30M** |
+| Envision Glasses | 頭戴眼鏡 | GPT + OCR | 多數需要 | $2,500-3,500 + 訂閱 | 活躍 |
+| WeWALK | 智能白杖 + app | 超音波 + GPS | 導航需要 | app 免費，杖 ~$600 | 活躍 |
+| Seeing AI (MS) | iOS/Android app | **GPT-5**（2025-08）| 複雜功能需要 | **免費** | 活躍，36語言，Ray-Ban 整合，Android 已達 iOS 同等功能 |
+| Be My Eyes | iOS/Android app | OpenAI + 7M志工 | **必需** | **免費** | 活躍，200語言（人工） |
+| WOAD (學術) | 400g 眼鏡+手機 | cross-modal | 研究原型 | 研究原型 | Nature 2025 |
 
-1. **OrCam 退場**（$4000 產品市場吃不下）是**硬體單價警訊**
-2. **Seeing AI + Be My Eyes 免費**：純雲端方案已被手機 app 覆蓋
-3. **Biped.ai 是最直接對手**：胸前 form factor + AI 避障 + 瑞士品牌
-4. **離線 + 多語是市場空白**：所有現有產品依賴雲端 AI
+### 關鍵啟示（2026-04 更新）
+
+1. **OrCam 徹底退出**：不只是「市場吃不下 $4000」，是 GPT/Gemini 讓專用硬體的商業模式崩潰。營收 $45M→$16M，裁員 400→80 人。
+2. **Seeing AI 升級 GPT-5**（2025-08）：免費且 Android 全功能，但複雜場景描述仍需網路
+3. **Biped.ai 是最直接對手**：胸前 form factor + AI 避障，但核心 AI 依賴 Google Gemini 雲端
+4. **Meta Ray-Ban 成為新平台**：Seeing AI、Be My Eyes 已整合，穿戴 + 免手持成趨勢
+5. **離線 × 低成本 × 多語 = 市場空白**：所有競品都有雲端依賴，此組合無競品覆蓋
 
 ---
 
