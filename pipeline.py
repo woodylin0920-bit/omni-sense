@@ -399,7 +399,7 @@ class OmniSensePipeline:
             self._bg_thread = threading.Thread(
                 target=self._background_describe,
                 args=(all_labels,),
-                daemon=False,
+                daemon=True,
             )
             self._bg_thread.start()
 
