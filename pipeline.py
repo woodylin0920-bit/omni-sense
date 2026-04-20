@@ -321,9 +321,33 @@ class OmniSensePipeline:
               f"{spd['postprocess']:.1f}ms postprocess, {depth_ms:.1f}ms depth "
               f"per image at shape (1, 3, {h}, {w})")
 
+        # 畫框：YOLO 內建框 + 距離色彩疊加
+        annotated = r0.plot()  # YOLO 標準藍框 + label + conf
+        dist_color = {"near": (0, 0, 255), "mid": (0, 165, 255), "far": (0, 255, 0)}
+        for r in results:
+            for box in r.boxes:
+                if float(box.conf) < 0.4:
+                    continue
+                label = r.names[int(box.cls)]
+                if label not in HIGH_PRIORITY_LABELS:
+                    continue
+                dist, _ = estimate_distance_depth(box, depth_map)
+                x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+                color = dist_color.get(dist, (255, 255, 255))
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 3)
+                cv2.putText(annotated, dist, (x1, y1 - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        self._last_annotated = annotated
+
         dist_order = {"near": 0, "mid": 1, "far": 2, "unknown": 3}
         detections.sort(key=lambda x: (dist_order.get(x[1], 3), -x[2]))
         return detections
+
+    def _annotate(self, frame):
+        """只畫 YOLO 框（不跑 Depth），用於 stream 顯示。內部快取最新結果。"""
+        import cv2
+        results = self.model(frame, verbose=False)
+        return results[0].plot()
 
     def process_frame(self, frame):
         """單幀處理：接 numpy BGR frame（cv2 預設格式）。"""
@@ -390,6 +414,7 @@ class OmniSensePipeline:
         print("按 q 或 ESC 結束")
 
         frame_idx = 0
+        annotated = None  # 最新一幀的 YOLO 畫框結果
         try:
             while True:
                 ok, frame = cap.read()
@@ -397,15 +422,16 @@ class OmniSensePipeline:
                     print("串流結束")
                     break
 
-                # Preview（showing 30fps 輸入）
-                cv2.imshow("omni-sense", frame)
-
-                # 每 N 幀跑 1 次 pipeline
+                # 每 N 幀跑 1 次 pipeline，更新畫框
                 if frame_idx % FRAME_STRIDE == 0:
                     try:
                         self.process_frame(frame)
                     except Exception as e:
                         print(f"[ERROR] process_frame: {e}")
+
+                # Preview：有框用框，沒框用原始幀
+                display = getattr(self, "_last_annotated", None)
+                cv2.imshow("omni-sense", display if display is not None else frame)
 
                 frame_idx += 1
 
@@ -449,7 +475,13 @@ def main():
         if frame is None:
             raise SystemExit(f"無法讀取圖片：{source}")
         pipe.process_frame(frame)
-        time.sleep(3)  # 等背景 Layer 2/3 播完
+        # 顯示畫框結果視窗
+        display = getattr(pipe, "_last_annotated", frame)
+        cv2.imshow("omni-sense", display)
+        print("按任意鍵關閉視窗...")
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+        time.sleep(2)  # 等背景 Layer 2/3 播完
         return
 
     # 攝影機或影片：用 process_stream
