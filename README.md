@@ -34,9 +34,13 @@ DepthAnything V2 深度估算 (near/mid/far 分級)
 
 ### 首次設定
 
+> ⚠️ **macOS 警告**：**不要**把 venv 建在 `~/Desktop/` 或 `~/Documents/`。這些路徑若有開 iCloud Drive 的「桌面與文件檔案夾」同步，`fileproviderd` 會攔截每次 `.pyc` 讀取，`import torch` 可能從 1 秒變 23+ 分鐘（~1200x）。把 venv 建在 `~/venvs/` 然後 symlink 回來。詳見 [docs/macos-icloud-venv-trap.md](docs/macos-icloud-venv-trap.md)。
+
 ```bash
-# 1. Python 環境
-python3 -m venv venv
+# 1. Python 環境（macOS：venv 放 iCloud 外）
+mkdir -p ~/venvs
+python3 -m venv ~/venvs/omni-sense-venv
+ln -s ~/venvs/omni-sense-venv venv   # 在 repo 內留 symlink，所有既有指令不變
 source venv/bin/activate
 pip install ultralytics transformers torch opencv-python edge-tts google-genai ollama pytest
 
