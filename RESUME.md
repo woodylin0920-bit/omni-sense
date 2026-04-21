@@ -4,29 +4,27 @@
 
 ---
 
-## 🔴 2026-04-21 重開機後第一件事
+## 🟢 2026-04-21 Phase 0 已驗證通過
 
-發現 `import edge_tts` hang 住（追到 `aiohttp → attr` 這條 import 鏈），導致 pytest 在 `test_speak_edge_unique_tempfile` 卡死。
+**重大變更**：`venv` 已從 iCloud-synced Desktop 搬到 `~/venvs/omni-sense-venv`，專案內留 symlink（`~/Desktop/omni-sense/venv` → `~/venvs/omni-sense-venv`）。**專案路徑不變，所有既有指令繼續可用。**
 
-**重開機後跑：**
+**為什麼搬**：原本 `./venv/bin/python -c "import torch"` 要 23+ 分鐘。真凶是 macOS iCloud Desktop sync 讓 `fileproviderd` 攔截每個 `.pyc` 讀取。搬離後 **1.15s warm**（~1200x 加速）。Codex 二次診斷確認。
+
+**Phase 0 實測數據（samples/test_street.mp4，11 個 Layer 3 事件）**:
+- Layer 3 Ollama warm: mean 968ms，範圍 712-1506ms（目標 3-8s，**遠超 SLO**）
+- Frame→播報 總計 warm: mean ~1170ms
+- Stale drop rate: **0/11 = 0%**（目標 <20%）
+- Cold start Ollama: 2057ms
+
+**下一個 blocker = prompt 品質不是延遲**：Layer 3 輸出 "請您提供更多上下文" / "車子會帶您到目的地" 這種 AI boilerplate。需要調 system prompt 讓 gemma3:1b 做場景描述而不是 chat。
+
+若重開機後 `import torch` 仍慢：檢查 `readlink ~/Desktop/omni-sense/venv` 應指向 `~/venvs/omni-sense-venv`。若 symlink 壞掉：
 ```bash
-cd ~/Desktop/omni-sense
-./venv/bin/pip install --force-reinstall attrs aiohttp
-./venv/bin/python -c "import edge_tts; print('ok')"   # 驗證 import 不 hang
-./venv/bin/pytest test_pipeline.py -v                 # 跑完整 13 tests
+rm ~/Desktop/omni-sense/venv
+ln -s ~/venvs/omni-sense-venv ~/Desktop/omni-sense/venv
 ```
 
-若 `import edge_tts` 仍 hang：
-```bash
-./venv/bin/pip install --force-reinstall edge-tts
-```
-
-測試都綠後，把 CodeX review 當下一步（Pattern ① 已 ready）：
-```bash
-git diff pipeline.py | codex exec "review this diff for bugs, edge cases, offline reliability concerns on M1 macOS"
-```
-
-當前狀態：pipeline.py 有 201 行 uncommitted diff，test_pipeline.py 有 51 行 uncommitted diff，docs/DESIGN.md 1 行 diff。**都沒 commit，環境重開後一樣。**
+pipeline.py + test_pipeline.py 的 Phase 0 改動已在 commit `c49d481` 等先前 commits 內。
 
 ---
 

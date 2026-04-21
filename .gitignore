@@ -7,9 +7,9 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Virtualenv
-venv/
-.venv/
+# Virtualenv (and symlinks to external venv)
+venv
+.venv
 env/
 
 # IDE
@@ -19,6 +19,7 @@ env/
 
 # Claude Code local overrides (personal, not team-wide)
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # macOS
 .DS_Store
