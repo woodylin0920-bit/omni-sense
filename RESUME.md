@@ -16,7 +16,14 @@
 - Stale drop rate: **0/11 = 0%**（目標 <20%）
 - Cold start Ollama: 2057ms
 
-**下一個 blocker = prompt 品質不是延遲**：Layer 3 輸出 "請您提供更多上下文" / "車子會帶您到目的地" 這種 AI boilerplate。需要調 system prompt 讓 gemma3:1b 做場景描述而不是 chat。
+**✅ 2026-04-26 已解：Layer 3 prompt 品質 blocker**
+
+解法（3 commits）：
+1. `ollama.generate` → `ollama.chat`，加 `system` role + 3 組 few-shot examples（zh/en/ja），temperature 0.1 + stop tokens（`\n`, `。`, `!`）。
+2. `_looks_like_boilerplate()` 偵測 "請您" / "I'm sorry" 等 patterns；命中則用 `template_fallback()` 輸出確定性的「前方有 X 和 Y」。
+3. 量測：JSONL log 記錄 `ollama_boilerplate_rejected` 事件，可用 `grep ollama_boilerplate_rejected logs/run_*.jsonl` 看觸發頻率。
+
+後續可選優化：實驗 `qwen2.5:1.5b`（多語表現可能更好）、或 M1 16GB 升級到 `gemma3:4b`。
 
 若重開機後 `import torch` 仍慢：檢查 `readlink ~/Desktop/omni-sense/venv` 應指向 `~/venvs/omni-sense-venv`。若 symlink 壞掉：
 ```bash
