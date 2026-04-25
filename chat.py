@@ -12,7 +12,7 @@ _OLLAMA_MODEL = "gemma3:1b"
 
 # Regex: filter OCR results that look like timestamps / date strings (video watermarks etc.)
 _TIMESTAMP_RE = re.compile(
-    r"^\d{4}[/\-]\d{2}[/\-]\d{2}|^\d{2}:\d{2}:\d{2}|\d{4}/\d{2}/\d{2}"
+    r"^\d{4}[/\-]\d|\d{4}/\d{2}/\d{2}|^\d{2}:\d{2}:\d{2}"
 )
 
 _SYSTEM = {
