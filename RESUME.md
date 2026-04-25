@@ -4,6 +4,43 @@
 
 ---
 
+## 🟢 2026-04-26 Chat MVP Phase 1 完工（OCR 基礎）
+
+**完成**：
+- docs/CHAT_DESIGN.md — 鎖定路徑 B (Scene Q&A + OCR) + 3 phase 拆解
+- omni_sense_ocr.py — RapidOCR 模組（lazy load + bbox / full-frame 兩種介面）
+- test_ocr.py — 5 unit tests，全部 mock，hermetic
+- benchmark.py — OCR cold / warm 數字（見 commit message）
+
+**還沒整合進 pipeline.py**。OCR 是 Phase 3 chat orchestrator 才會接進來。
+
+**下一步**（給未來的我 / 接手的人）：
+1. 看 OCR cold / warm benchmark 數字決定要不要繼續：
+   - cold < 5s、warm < 1.5s、且讀得到中文招牌 → 進 Phase 2
+   - 慢 / 讀不到 → 評估換模型或砍掉 chat 功能
+2. 若繼續：貼 docs/prompts/phase2-whisper.md 給 Claude Code（Phase 1 commit 6 已建）
+3. **去訪談視障者**（DESIGN.md 已記錄為 #1 blocker，這比 Phase 2/3 都重要）
+
+**已知決策（防止下個 LLM 重新爭辯）**：
+- Layer 3 LLM = pitch deck dressing，Layer 1 才是真產品（60s 實機驗證證實）
+- Chat 走路徑 B，不做地圖 / GPS / 音訊分類（CHAT_DESIGN.md）
+- OCR 用 RapidOCR-onnxruntime（M1 native），非 PaddleOCR / EasyOCR
+- YOLO 走 CoreML mlpackage（14ms vs 71ms .pt）
+
+**環境陷阱（別重蹈覆轍）**：
+- venv 必須在 ~/venvs/，不能在 ~/Desktop/（iCloud sync 讓 import 慢 1200x）
+- macOS cv2 windowing 必須在 main thread（producer/consumer 架構保證了這點）
+- pytest 必走 ~/venvs/omni-sense-venv/bin/pytest，否則沒裝套件
+
+**驗證 repo 健康（30 秒）**：
+```bash
+~/venvs/omni-sense-venv/bin/pytest -v          # 應該 40 個全綠
+~/venvs/omni-sense-venv/bin/python pipeline.py --source samples/people_street.jpg --lang zh
+# 看到 [Layer 1] + [Layer 3] 即正常
+```
+
+---
+
 ## 🟢 2026-04-21 Phase 0 已驗證通過
 
 **重大變更**：`venv` 已從 iCloud-synced Desktop 搬到 `~/venvs/omni-sense-venv`，專案內留 symlink（`~/Desktop/omni-sense/venv` → `~/venvs/omni-sense-venv`）。**專案路徑不變，所有既有指令繼續可用。**
