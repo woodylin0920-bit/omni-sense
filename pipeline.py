@@ -377,6 +377,7 @@ def _first_sentence(stream_iter, timeout_sec: float) -> str:
 # --- Layer 2: Gemini Flash ---
 def gemini_describe(objects, lang: str = "zh") -> str:
     """雲端 LLM 場景描述，串流取第一句。失敗回空字串。"""
+    objects = list(dict.fromkeys(objects))[:3]  # 去重保序、上限 3
     import os
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
@@ -409,6 +410,7 @@ def ollama_describe_stream(objects, lang: str = "zh"):
     chat API beats generate for 1B models: system role separation prevents
     the model from treating the prompt as a dialogue opening.
     """
+    objects = list(dict.fromkeys(objects))[:3]  # 去重保序、上限 3
     import ollama
 
     sys_msg = OLLAMA_SYSTEM.get(lang, OLLAMA_SYSTEM["zh"])
@@ -480,6 +482,7 @@ def _looks_like_boilerplate(text: str, lang: str) -> bool:
 
 def template_fallback(labels: list, lang: str) -> str:
     """Deterministic safety net: always produces a valid navigation alert."""
+    labels = list(dict.fromkeys(labels))  # 去重保序
     nouns_dict = NOUN_BY_LANG.get(lang, NOUN_BY_LANG["zh"])
     nouns = [nouns_dict.get(lb, nouns_dict["default"]) for lb in labels[:2]]
     if lang == "zh":
@@ -742,7 +745,7 @@ class OmniSensePipeline:
             # Layer 2/3 背景補充描述
             # 策略：忽略新請求（drop-if-busy）。同一時間只允許一個 worker，
             # 避免連續 alert 觸發多個 LLM 呼叫堆積。新請求來時若舊 worker 仍在跑則跳過。
-            all_labels = [d[0] for d in detections[:3]]
+            all_labels = list(dict.fromkeys(d[0] for d in detections))[:3]
             with self._bg_lock:
                 if self._bg_thread is None or not self._bg_thread.is_alive():
                     self._bg_thread = threading.Thread(

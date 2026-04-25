@@ -567,6 +567,70 @@ def test_yolo_model_path_prefers_mlpackage(tmp_path):
         assert pipeline._resolve_yolo_path().endswith(".pt")
 
 
+# === Test 32: gemini_describe 去重 ===
+def test_gemini_describe_dedups_labels():
+    """gemini_describe deduplicates labels before building the prompt."""
+    mock_genai = MagicMock()
+    mock_client = MagicMock()
+    mock_genai.Client.return_value = mock_client
+    mock_client.models.generate_content_stream.return_value = iter([
+        MagicMock(text="前方有行人")
+    ])
+
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "fake"}), \
+         patch.dict("sys.modules", {
+             "google": MagicMock(genai=mock_genai),
+             "google.genai": mock_genai,
+         }):
+        pipeline.gemini_describe(["person", "person", "person"], "zh")
+
+    _, kwargs = mock_client.models.generate_content_stream.call_args
+    prompt = kwargs["contents"]
+    assert prompt.count("person") == 1  # 重複已消除
+
+
+# === Test 33: ollama_describe_stream 去重 ===
+def test_ollama_describe_stream_dedups_labels():
+    """ollama_describe_stream deduplicates labels before building messages."""
+    mock_ollama = MagicMock()
+    mock_ollama.chat.return_value = iter([{"message": {"content": "前方有行人"}}])
+
+    with patch.dict("sys.modules", {"ollama": mock_ollama}):
+        list(pipeline.ollama_describe_stream(["person", "person", "person"], "zh"))
+
+    _, kwargs = mock_ollama.chat.call_args
+    final_user_content = kwargs["messages"][-1]["content"]
+    assert final_user_content == "person"  # 去重後只剩一個
+
+
+# === Test 34: template_fallback 去重 ===
+def test_template_fallback_dedups():
+    """template_fallback deduplicates labels to avoid '前方有行人和行人'."""
+    assert pipeline.template_fallback(["person", "person", "person"], "zh") == "前方有行人"
+    assert pipeline.template_fallback(["person", "car", "person"], "zh") == "前方有行人和車輛"
+
+
+# === Test 35: process_frame 送給 background 的 labels 已去重 ===
+def test_process_frame_passes_deduped_labels():
+    """process_frame deduplicates detection labels before passing to _background_describe."""
+    p = make_pipeline()
+    received_labels = []
+
+    def capture_bg(labels, *args, **kwargs):
+        received_labels.extend(labels)
+
+    with patch.object(p, "_detect",
+                      return_value=[("person", "near", 0.9, 0.3),
+                                    ("person", "near", 0.85, 0.3),
+                                    ("car",    "mid",  0.8,  0.5)]), \
+         patch("pipeline.speak_local"), \
+         patch.object(p, "_background_describe", side_effect=capture_bg), \
+         patch("builtins.print"):
+        p.process_frame(MagicMock())
+
+    assert received_labels == ["person", "car"]
+
+
 # === Test 21: autouse fixture 停掉 event log ===
 def test_event_log_disabled_in_tests():
     """conftest autouse fixture ensures _event_log_fp stays None during tests."""
