@@ -269,9 +269,30 @@ def estimate_distance_bbox(box, frame_h: int, frame_w: int) -> tuple[str, None]:
     return "far", None
 
 
+_SENTENCE_ENDINGS = frozenset("。.!?！？")
+
+
+def _first_sentence(stream_iter, timeout_sec: float) -> str:
+    """Accumulate stream chunks; return first complete sentence or all text on timeout.
+
+    Soft timeout: checks elapsed time between chunk arrivals.
+    Returns "" if stream yields nothing within timeout_sec.
+    """
+    buf = ""
+    deadline = time.perf_counter() + timeout_sec
+    for chunk in stream_iter:
+        buf += chunk
+        for i, ch in enumerate(buf):
+            if ch in _SENTENCE_ENDINGS:
+                return buf[:i + 1].strip()
+        if time.perf_counter() > deadline:
+            break
+    return buf.strip()
+
+
 # --- Layer 2: Gemini Flash ---
 def gemini_describe(objects, lang: str = "zh") -> str:
-    """雲端 LLM 場景描述。失敗回空字串。"""
+    """雲端 LLM 場景描述，串流取第一句。失敗回空字串。"""
     import os
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
@@ -283,10 +304,14 @@ def gemini_describe(objects, lang: str = "zh") -> str:
         prompt = (
             f"視障導航助理。用一句話（15字以內）用{lang_name}告訴視障者：{', '.join(objects)}。"
         )
-        resp = client.models.generate_content(
-            model="gemini-2.0-flash", contents=prompt
+        stream = (
+            chunk.text
+            for chunk in client.models.generate_content_stream(
+                model="gemini-2.0-flash", contents=prompt
+            )
+            if chunk.text
         )
-        return resp.text.strip()
+        return _first_sentence(stream, timeout_sec=0.8)
     except Exception as e:
         print(f"[Layer 2] Gemini 失敗：{e}")
         return ""
@@ -294,7 +319,7 @@ def gemini_describe(objects, lang: str = "zh") -> str:
 
 # --- Layer 3: 本地 Ollama + Gemma 3 1B ---
 def ollama_describe(objects, lang: str = "zh") -> str:
-    """離線 fallback：本地 LLM 生成場景描述。"""
+    """離線 fallback：本地 LLM 串流取第一句。"""
     import ollama
 
     prompts = {
@@ -304,12 +329,14 @@ def ollama_describe(objects, lang: str = "zh") -> str:
     }
     prompt = prompts.get(lang, prompts["zh"])
     try:
-        resp = ollama.generate(
+        resp_stream = ollama.generate(
             model=OLLAMA_MODEL,
             prompt=prompt,
+            stream=True,
             options={"num_predict": 16, "temperature": 0.3, "keep_alive": "10m"},
         )
-        return resp["response"].strip()
+        chunks = (chunk["response"] for chunk in resp_stream)
+        return _first_sentence(chunks, timeout_sec=5.0)
     except Exception as e:
         print(f"[Layer 3] Ollama 失敗：{e}")
         return ""
@@ -539,7 +566,7 @@ class OmniSensePipeline:
                 used_layer = 2
                 elapsed = (time.perf_counter() - t) * 1000
                 total = (time.perf_counter() - t0) * 1000 if t0 else 0
-                print(f"  ⏱ Layer 2 Gemini：{elapsed:.0f}ms｜frame→播報總計：{total:.0f}ms")
+                print(f"  ⏱ Layer 2 Gemini first-sentence：{elapsed:.0f}ms｜frame→播報總計：{total:.0f}ms")
 
         if not desc and self._ollama_ready:
             t = time.perf_counter()
@@ -548,7 +575,7 @@ class OmniSensePipeline:
                 used_layer = 3
                 elapsed = (time.perf_counter() - t) * 1000
                 total = (time.perf_counter() - t0) * 1000 if t0 else 0
-                print(f"  ⏱ Layer 3 Ollama：{elapsed:.0f}ms｜frame→播報總計：{total:.0f}ms")
+                print(f"  ⏱ Layer 3 Ollama first-sentence：{elapsed:.0f}ms｜frame→播報總計：{total:.0f}ms")
 
         if desc:
             # 描述回來太晚就丟棄，避免語音和目前畫面不同步

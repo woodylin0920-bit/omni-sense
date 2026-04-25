@@ -90,20 +90,24 @@ def test_cooldown_gradient():
     assert p._cooldown("unknown") == 3.0  # 未知距離用保守值
 
 
-# === Test 5: ollama_describe 正常路徑 ===
+# === Test 5: ollama_describe 正常路徑（streaming）===
 def test_ollama_describe_happy_path():
-    """sys.modules mock 整個 ollama，避免 import 時連接 daemon（卡 ~79s）。"""
-    fake_response = {"response": "前方有車，請小心  "}
+    """sys.modules mock 整個 ollama，stream=True 版本。"""
+    fake_stream = iter([
+        {"response": "前方有車，"},
+        {"response": "請小心。"},
+    ])
     mock_ollama = MagicMock()
-    mock_ollama.generate.return_value = fake_response
+    mock_ollama.generate.return_value = fake_stream
 
     with patch.dict("sys.modules", {"ollama": mock_ollama}):
         result = pipeline.ollama_describe(["car"], lang="zh")
 
-    assert result == "前方有車，請小心"  # strip 後
+    assert result == "前方有車，請小心。"  # first sentence including ending
     mock_ollama.generate.assert_called_once()
     _, kwargs = mock_ollama.generate.call_args
     assert kwargs["model"] == pipeline.OLLAMA_MODEL
+    assert kwargs.get("stream") is True
     assert "繁體中文" in kwargs["prompt"]
     assert "car" in kwargs["prompt"]
 
