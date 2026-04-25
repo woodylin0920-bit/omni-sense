@@ -4,6 +4,49 @@
 
 ---
 
+## 🟢 2026-04-26 Chat MVP Phase 2 完工（ASR 基礎）
+
+**完成**：
+- sounddevice 0.5.5 + mlx-whisper 0.4.3 (whisper-base-mlx) 安裝驗證
+- omni_sense_asr.py — push-to-talk 錄音 + 轉錄（lazy load，warmup_once）
+- test_asr.py — 5 unit tests，全部 mock，hermetic（45/45 全綠）
+- benchmark.py — ASR cold/warm benchmark（見 commit message）
+- samples/test_zh.wav + test_en.wav — TTS baseline 測試音檔
+- scripts/verify_asr.sh — 硬體驗證腳本
+
+**ASR 實測數字（M1 Air 8GB，whisper-base-mlx，TTS-clean audio）**：
+- cold warmup: 2401ms（warmup_once() 在 pipeline 啟動時跑）
+- warm transcribe: avg **137ms**（6 runs，中英文都讀對）
+- 中文：'前面那個招牌寫什麼?' ✅
+- 英文：'What does the sign say?' ✅
+
+**還沒整合進 pipeline.py**。ASR 是 Phase 3 chat orchestrator 才會接進來。
+
+**下一步**（給未來的我 / 接手的人）：
+1. warm 137ms < 1s SLO → **進 Phase 3** ✅
+   （唯一擔憂：real-world WER 比 TTS-clean 差，Phase 3 做完再驗）
+2. 貼 docs/prompts/phase3-chat.md 給 Claude Code（Phase 2 commit 5 已建 stub）
+3. **去訪談視障者**（比 Phase 3 更重要）
+
+**已知決策（防止下個 LLM 重新爭辯）**：
+- ASR 用 mlx-whisper whisper-base-mlx（M1 native，scipy 讀 WAV，不需 ffmpeg）
+- push-to-talk = 空白鍵釋放，不做 wake word
+- 單 turn Q&A，無多輪記憶
+
+**環境陷阱（Phase 2 新增）**：
+- mlx-whisper 0.4.3 依賴 numba → llvmlite（總共 ~100MB 下載）
+- transcribe_path() 不用 ffmpeg，走 scipy.io.wavfile → numpy array
+- whisper model 下載到 ~/.cache/huggingface/（~200MB），第一次 cold warmup ~2.4s
+
+**驗證 repo 健康（30 秒）**：
+```bash
+~/venvs/omni-sense-venv/bin/pytest -v          # 45 個全綠
+bash scripts/verify_asr.sh                       # mic + warmup 驗證
+~/venvs/omni-sense-venv/bin/python -c "import benchmark; benchmark.bench_asr()"
+```
+
+---
+
 ## 🟢 2026-04-26 Chat MVP Phase 1 完工（OCR 基礎）
 
 **完成**：

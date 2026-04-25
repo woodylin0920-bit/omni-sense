@@ -6,7 +6,7 @@
 | Phase | 檔案 | 狀態 |
 |---|---|---|
 | 1 | phase1-ocr.md | ✅ 完工（見 git log）|
-| 2 | phase2-whisper.md | ⏳ 待寫 |
+| 2 | phase2-whisper.md | ✅ 完工（見 git log）|
 | 3 | phase3-chat.md | ⏳ 待寫 |
 
 ## 怎麼用
