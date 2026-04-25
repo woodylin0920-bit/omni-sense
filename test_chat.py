@@ -66,6 +66,37 @@ def test_build_context_empty_returns_no_detect():
     assert ctx == "（無偵測結果）"
 
 
+def test_filter_ocr_removes_timestamps():
+    import chat
+    raw = [
+        ((0, 0, 10, 10), "2019/11/08 04:29:31", 0.9),
+        ((10, 0, 20, 10), "出口", 0.8),
+        ((20, 0, 30, 10), "2024-03-15", 0.7),
+    ]
+    clean = chat._filter_ocr(raw)
+    texts = [r[1] for r in clean]
+    assert "出口" in texts
+    assert not any("2019" in t or "2024" in t for t in texts)
+
+
+def test_no_detection_no_ocr_skips_ollama(monkeypatch):
+    """When both detections and clean OCR are empty, return fixed string without calling Ollama."""
+    called = []
+    fake_ollama = types.SimpleNamespace()
+    fake_ollama.chat = lambda *a, **kw: called.append(1) or {"message": {"content": "x"}}
+    monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
+
+    fake_ocr = types.SimpleNamespace()
+    fake_ocr.ocr_full_frame = lambda *a, **kw: []
+    monkeypatch.setitem(sys.modules, "omni_sense_ocr", fake_ocr)
+    monkeypatch.delitem(sys.modules, "chat", raising=False)
+
+    import chat
+    ans = chat.answer_query("前面有什麼？", _frame(), [], lang="zh")
+    assert called == []  # Ollama not called
+    assert ans  # returns a non-empty fallback string
+
+
 def test_answer_query_ollama_failure_returns_empty(monkeypatch):
     failing_ollama = types.SimpleNamespace()
     failing_ollama.chat = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("ollama down"))
