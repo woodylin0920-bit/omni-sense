@@ -6,6 +6,7 @@ pipeline.py 的 7 個必要 test。
 """
 
 import os
+import time
 import socket
 import threading
 from pathlib import Path
@@ -231,6 +232,39 @@ def test_speak_edge_unique_tempfile():
             os.unlink(p)
         except OSError:
             pass
+
+
+# === Test 17: mark_network_down resets cache ===
+def test_mark_network_down_resets_cache():
+    """mark_network_down() sets _network_ok=False and _last_check=0.0."""
+    pipeline._network_ok = True
+    pipeline._last_check = time.time()
+
+    pipeline.mark_network_down()
+
+    assert pipeline._network_ok is False
+    assert pipeline._last_check == 0.0
+
+
+# === Test 18: Gemini failure calls mark_network_down ===
+def test_gemini_failure_marks_network_down():
+    """Any Gemini exception → mark_network_down() → _network_ok reset."""
+    pipeline._network_ok = True
+    pipeline._last_check = time.time()
+
+    mock_genai = MagicMock()
+    mock_genai.Client.side_effect = RuntimeError("quota exceeded")
+
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"}), \
+         patch.dict("sys.modules", {
+             "google": MagicMock(genai=mock_genai),
+             "google.genai": mock_genai,
+         }):
+        result = pipeline.gemini_describe(["car"], "zh")
+
+    assert result == ""
+    assert pipeline._network_ok is False
+    assert pipeline._last_check == 0.0
 
 
 # === Test 16: speak_local 語速依 priority 分級 ===

@@ -121,6 +121,13 @@ def is_online() -> bool:
     return _network_ok
 
 
+def mark_network_down():
+    """Force is_online() to re-probe on the very next call."""
+    global _network_ok, _last_check
+    _network_ok = False
+    _last_check = 0.0
+
+
 # --- TTS ---
 def _stop_current_audio_unlocked():
     global _current_audio_proc, _current_audio_priority, _current_audio_started
@@ -321,6 +328,7 @@ def gemini_describe(objects, lang: str = "zh") -> str:
         return _first_sentence(stream, timeout_sec=0.8)
     except Exception as e:
         print(f"[Layer 2] Gemini 失敗：{e}")
+        mark_network_down()
         return ""
 
 
