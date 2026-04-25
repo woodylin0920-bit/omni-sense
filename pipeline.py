@@ -230,15 +230,20 @@ def speak_edge(text: str, lang: str = "zh", priority: int = PRIORITY_L2) -> bool
 
 # --- 距離估算 ---
 def estimate_distance_depth(box, depth_map):
-    """用 DepthAnything V2 深度圖估算距離。回 (label, depth_ratio)。"""
+    """用 DepthAnything V2 深度圖估算距離。回 (label, depth_ratio)。
+
+    Samples bottom 20% of bbox with median — aligns with ground contact,
+    avoids sky/background bias from tall objects, robust to occlusion outliers.
+    """
     import numpy as np
 
     x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
     depth_arr = np.array(depth_map)
-    region = depth_arr[y1:y2, x1:x2]
+    y_band = int(y1 + (y2 - y1) * 0.8)
+    region = depth_arr[y_band:y2, x1:x2]
     if region.size == 0:
         return "unknown", None
-    avg_depth = float(region.mean())
+    avg_depth = float(np.median(region))
     max_d = float(depth_arr.max())
     ratio = avg_depth / max_d if max_d > 0 else 0.5
     if ratio < 0.35:
@@ -319,9 +324,17 @@ class OmniSensePipeline:
         self._bg_thread: Optional[threading.Thread] = None
         self._bg_lock = threading.Lock()
 
+        import torch
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        print(f"使用 device: {device}")
+
         print("載入 YOLO26s...")
         from ultralytics import YOLO
         self.model = YOLO(YOLO_MODEL)
+        try:
+            self.model.to(device)
+        except Exception as e:
+            print(f"⚠️ YOLO device 切換失敗，繼續用 cpu：{e}")
         self.model(str(_WARMUP_IMG), verbose=False)  # warm up
 
         print("載入 DepthAnything V2...")
@@ -332,6 +345,7 @@ class OmniSensePipeline:
             "depth-estimation",
             model="depth-anything/Depth-Anything-V2-Small-hf",
             local_files_only=True,
+            device=device,
         )
         self.depth_pipe(Image.open(_WARMUP_IMG))  # warm up
 
