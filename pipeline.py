@@ -392,6 +392,12 @@ class OmniSensePipeline:
         self._bg_thread: Optional[threading.Thread] = None
         self._bg_lock = threading.Lock()
 
+        self._frame_lock = threading.Lock()
+        self._latest_frame = None       # capture 寫，display + analyze 讀
+        self._stop_event = threading.Event()
+        self._capture_thread: Optional[threading.Thread] = None
+        self._analyze_thread: Optional[threading.Thread] = None
+
         import torch
         device = "mps" if torch.backends.mps.is_available() else "cpu"
         print(f"使用 device: {device}")
@@ -554,6 +560,7 @@ class OmniSensePipeline:
                             (x1, y2 + 24),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
+        # ref-swap under GIL: display thread reads this without a lock
         self._last_annotated = annotated
         log_event("detection", hp_count=len(hp_boxes), total_objects=sum(counts.values()),
                   yolo_ms=spd['inference'], depth_ms=depth_ms, depth_skipped=bg_busy)
@@ -564,6 +571,36 @@ class OmniSensePipeline:
         import cv2
         results = self.model(frame, verbose=False)
         return results[0].plot()
+
+    def _capture_loop(self, cap):
+        """Continuously read frames into _latest_frame slot, dropping stale ones."""
+        while not self._stop_event.is_set():
+            ok, frame = cap.read()
+            if not ok:
+                print("串流結束")
+                self._stop_event.set()
+                break
+            with self._frame_lock:
+                self._latest_frame = frame
+
+    def _analyze_loop(self):
+        """Pull latest frame and run process_frame at FRAME_STRIDE cadence."""
+        frame_idx = 0
+        last_processed = None  # id() of last frame sent to process_frame
+        while not self._stop_event.is_set():
+            with self._frame_lock:
+                frame = self._latest_frame
+            if frame is None or id(frame) == last_processed:
+                time.sleep(0.005)
+                continue
+            if frame_idx % FRAME_STRIDE == 0:
+                try:
+                    self.process_frame(frame)
+                except Exception as e:
+                    print(f"[ERROR] analyze_loop: {e}")
+                    log_event("error", where="analyze_loop", err=str(e))
+            last_processed = id(frame)
+            frame_idx += 1
 
     def process_frame(self, frame):
         """單幀處理：接 numpy BGR frame（cv2 預設格式）。"""
@@ -658,8 +695,11 @@ class OmniSensePipeline:
                       text=desc)
 
     def process_stream(self, source):
-        """攝影機或影片檔連續流。source 接 int (camera index) 或 str (檔案路徑)。
-        每 FRAME_STRIDE 幀抽 1 幀分析，避免撞 GPU。
+        """攝影機或影片檔連續流。3 lanes：capture / analyze / display。
+
+        Capture thread: cv2.VideoCapture → _latest_frame slot（drop stale）
+        Analyze thread: pull latest, run process_frame at FRAME_STRIDE cadence
+        Main thread:    cv2.imshow + key handling（macOS 要求 windowing 在 main thread）
         """
         import cv2
 
@@ -670,30 +710,28 @@ class OmniSensePipeline:
         print(f"開始串流 (source={source}, 分析 stride={FRAME_STRIDE})")
         print("按 q 或 ESC 結束")
 
-        frame_idx = 0
-        annotated = None  # 最新一幀的 YOLO 畫框結果
+        self._stop_event.clear()
+        capture_t = threading.Thread(target=self._capture_loop, args=(cap,), daemon=True)
+        analyze_t = threading.Thread(target=self._analyze_loop, daemon=True)
+        capture_t.start()
+        analyze_t.start()
+
         try:
-            while True:
-                ok, frame = cap.read()
-                if not ok:
-                    print("串流結束")
-                    break
-
-                # 每 N 幀跑 1 次 pipeline，更新畫框
-                if frame_idx % FRAME_STRIDE == 0:
-                    try:
-                        self.process_frame(frame)
-                    except Exception as e:
-                        print(f"[ERROR] process_frame: {e}")
-
-                # Preview：有框用框，沒框用原始幀
+            while not self._stop_event.is_set():
+                with self._frame_lock:
+                    current_frame = self._latest_frame
+                # _last_annotated is a ref-swap under GIL: safe to read without lock
                 display = getattr(self, "_last_annotated", None)
-                cv2.imshow("omni-sense", display if display is not None else frame)
-
-                frame_idx += 1
-
+                if display is not None:
+                    cv2.imshow("omni-sense", display)
+                elif current_frame is not None:
+                    cv2.imshow("omni-sense", current_frame)
+                else:
+                    time.sleep(0.01)
+                    continue
                 key = cv2.waitKey(1) & 0xFF
-                if key in (ord("q"), 27):  # q or ESC
+                if key in (ord("q"), 27):
+                    self._stop_event.set()
                     break
                 elif key == ord("1"):
                     self.set_language("zh")
@@ -702,6 +740,9 @@ class OmniSensePipeline:
                 elif key == ord("3"):
                     self.set_language("ja")
         finally:
+            self._stop_event.set()
+            capture_t.join(timeout=2)
+            analyze_t.join(timeout=2)
             cap.release()
             cv2.destroyAllWindows()
 

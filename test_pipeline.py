@@ -28,6 +28,9 @@ def make_pipeline(lang: str = "zh", ollama_ready: bool = True) -> pipeline.OmniS
     p._bg_lock = threading.Lock()
     p.model = MagicMock()
     p.depth_pipe = MagicMock()
+    p._frame_lock = threading.Lock()
+    p._latest_frame = None
+    p._stop_event = threading.Event()
     return p
 
 
@@ -397,6 +400,67 @@ def test_log_event_noop_when_uninitialized():
         pipeline.log_event("should_not_crash", x=1)  # no exception expected
     finally:
         pipeline._event_log_fp = old_fp
+
+
+# === Test 22: _capture_loop 只保留最新一幀 ===
+def test_capture_loop_drops_old_frames():
+    """_capture_loop overwrites _latest_frame; only the last successfully read frame remains."""
+    import numpy as np
+
+    p = make_pipeline()
+    frames = [np.full((10, 10, 3), i, dtype=np.uint8) for i in range(3)]
+    read_state = {"n": 0}
+
+    def mock_read():
+        if read_state["n"] < 3:
+            f = frames[read_state["n"]]
+            read_state["n"] += 1
+            return True, f
+        p._stop_event.set()
+        return False, None
+
+    mock_cap = MagicMock()
+    mock_cap.read.side_effect = mock_read
+
+    with patch("builtins.print"):
+        t = threading.Thread(target=p._capture_loop, args=(mock_cap,), daemon=True)
+        t.start()
+        t.join(timeout=2)
+
+    assert p._latest_frame is not None
+    np.testing.assert_array_equal(p._latest_frame, frames[-1])
+
+
+# === Test 23: process_stream 乾淨收尾 ===
+def test_process_stream_clean_shutdown():
+    """After cap exhausts frames, stop_event fires and both worker threads join."""
+    import numpy as np
+
+    p = make_pipeline()
+    fake_frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    read_state = {"n": 0}
+
+    def mock_read():
+        if read_state["n"] < 3:
+            read_state["n"] += 1
+            return True, fake_frame
+        return False, None
+
+    mock_cap = MagicMock()
+    mock_cap.read.side_effect = mock_read
+    mock_cap.isOpened.return_value = True
+
+    mock_cv2 = MagicMock()
+    mock_cv2.VideoCapture.return_value = mock_cap
+    mock_cv2.waitKey.return_value = 0
+
+    with patch.dict("sys.modules", {"cv2": mock_cv2}), \
+         patch.object(p, "process_frame"), \
+         patch("builtins.print"):
+        p.process_stream("fake.mp4")
+
+    assert mock_cap.release.called
+    assert mock_cv2.destroyAllWindows.called
 
 
 # === Test 21: autouse fixture 停掉 event log ===
