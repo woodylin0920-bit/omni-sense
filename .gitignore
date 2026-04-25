@@ -41,3 +41,4 @@ logs/*.jsonl
 *.onnx
 *.mlpackage
 .rapidocr_cache/
+.mlx_cache/
