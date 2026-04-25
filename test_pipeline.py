@@ -359,6 +359,46 @@ def test_estimate_distance_bbox_far():
     assert depth_val is None
 
 
+# === Test 19: log_event 寫出合法 JSONL ===
+def test_event_log_writes_jsonl():
+    """log_event writes a valid JSONL record with ts, type, and payload fields."""
+    import tempfile
+    import json as _json
+
+    old_fp = pipeline._event_log_fp
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="a", suffix=".jsonl", delete=False) as f:
+            tmp_path = f.name
+        with open(tmp_path, "a", buffering=1) as fp:
+            pipeline._event_log_fp = fp
+            pipeline.log_event("test_event", foo="bar", n=42)
+
+        with open(tmp_path) as f:
+            line = f.read().strip()
+        record = _json.loads(line)
+
+        assert record["type"] == "test_event"
+        assert record["foo"] == "bar"
+        assert record["n"] == 42
+        assert "ts" in record
+    finally:
+        pipeline._event_log_fp = old_fp
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
+
+
+# === Test 20: log_event noop when _event_log_fp is None ===
+def test_log_event_noop_when_uninitialized():
+    """log_event must not crash when called before init_event_log."""
+    old_fp = pipeline._event_log_fp
+    try:
+        pipeline._event_log_fp = None
+        pipeline.log_event("should_not_crash", x=1)  # no exception expected
+    finally:
+        pipeline._event_log_fp = old_fp
+
+
 # === Test 11: ultralytics lazy import — import pipeline 不觸發 torch 載入 ===
 def test_ultralytics_not_imported_at_module_level():
     """import pipeline 不應在 module 層觸發 ultralytics/torch。
@@ -402,6 +442,7 @@ def test_init_lazy_import_path():
          patch("pipeline.YOLO_MODEL", "/fake/yolo.pt"), \
          patch("pipeline._WARMUP_IMG", Path("/fake/bus.jpg")), \
          patch("pipeline.check_network"), \
+         patch("pipeline.init_event_log"), \
          patch("builtins.print"):
 
         p = pipeline.OmniSensePipeline(lang="zh")

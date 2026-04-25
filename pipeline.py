@@ -12,10 +12,12 @@ Demo 目標：可行性 + 速度
 """
 
 import time
+import json
 import subprocess
 import threading
 import socket
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -79,6 +81,29 @@ GEMINI_ENDPOINT_HOST = "generativelanguage.googleapis.com"
 GEMINI_ENDPOINT_PORT = 443
 
 
+# --- 結構化事件 log ---
+_event_log_fp = None  # 全 session 共用 file handle
+
+
+def init_event_log():
+    """建立 logs/run_<ts>.jsonl，OmniSensePipeline.__init__ 呼叫一次。"""
+    global _event_log_fp
+    logs_dir = _HERE / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = logs_dir / f"run_{ts}.jsonl"
+    _event_log_fp = open(path, "a", buffering=1)  # line-buffered
+    return path
+
+
+def log_event(event_type: str, **payload):
+    """寫一行 JSONL 事件。fp 沒開就 noop（test 環境）。"""
+    if _event_log_fp is None:
+        return
+    record = {"ts": time.time(), "type": event_type, **payload}
+    _event_log_fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 # --- 網路偵測：測真正要連的 Gemini endpoint，不是 google.com ---
 _network_ok = False
 _last_check = 0.0
@@ -113,6 +138,7 @@ def check_network():
     except (socket.timeout, OSError):
         _network_ok = False
     _last_check = time.time()
+    log_event("network_check", ok=_network_ok)
 
 
 def is_online() -> bool:
@@ -406,12 +432,16 @@ class OmniSensePipeline:
 
         print("Pipeline 就緒 (lang={})".format(lang))
         check_network()
+        path = init_event_log()
+        print(f"事件 log: {path}")
 
     def set_language(self, lang: str):
         """Runtime 切換語言：zh / en / ja。"""
         if lang not in TEMPLATES:
             raise ValueError(f"不支援的語言: {lang}")
+        old_lang = self.lang
         self.lang = lang
+        log_event("lang_switch", from_=old_lang, to=lang)
         print(f"語言切換 → {lang}")
 
     def _cooldown(self, dist: str) -> float:
@@ -458,6 +488,8 @@ class OmniSensePipeline:
             print(f"Speed: {spd['preprocess']:.1f}ms preprocess, {spd['inference']:.1f}ms inference, "
                   f"{spd['postprocess']:.1f}ms postprocess, 0ms depth (skipped)")
             self._last_annotated = r0.plot()
+            log_event("detection", hp_count=0, total_objects=sum(counts.values()),
+                      yolo_ms=spd['inference'], depth_ms=0, depth_skipped=False)
             return []
 
         # ── Step 3: 有 HIGH_PRIORITY → 才跑 Depth（Ollama 推理中則跳過）──
@@ -523,6 +555,8 @@ class OmniSensePipeline:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
         self._last_annotated = annotated
+        log_event("detection", hp_count=len(hp_boxes), total_objects=sum(counts.values()),
+                  yolo_ms=spd['inference'], depth_ms=depth_ms, depth_skipped=bg_busy)
         return [(l, d, c, dv) for l, d, c, dv, _ in hp_boxes]
 
     def _annotate(self, frame):
@@ -555,6 +589,8 @@ class OmniSensePipeline:
             t_say_ms = (time.perf_counter() - t_say) * 1000
             print(f"[Layer 1] {text}")
             print(f"  ⏱ 偵測→播報：{t_detect:.0f}ms｜say 觸發：{t_say_ms:.0f}ms（語音在背景播放）")
+            log_event("alert_l1", label=nearest_label, dist=nearest_dist,
+                      lang=self.lang, detect_to_alert_ms=t_detect)
             self._mark_alerted(nearest_label, nearest_dist)
 
             # Layer 2/3 背景補充描述
@@ -582,6 +618,7 @@ class OmniSensePipeline:
                 elapsed = (time.perf_counter() - t) * 1000
                 total = (time.perf_counter() - t0) * 1000 if t0 else 0
                 print(f"  ⏱ Layer 2 Gemini first-sentence：{elapsed:.0f}ms｜frame→播報總計：{total:.0f}ms")
+                log_event("llm_first_sentence", layer=2, ms=elapsed, lang=self.lang, labels=labels)
 
         if not desc and self._ollama_ready:
             t = time.perf_counter()
@@ -591,6 +628,7 @@ class OmniSensePipeline:
                 elapsed = (time.perf_counter() - t) * 1000
                 total = (time.perf_counter() - t0) * 1000 if t0 else 0
                 print(f"  ⏱ Layer 3 Ollama first-sentence：{elapsed:.0f}ms｜frame→播報總計：{total:.0f}ms")
+                log_event("llm_first_sentence", layer=3, ms=elapsed, lang=self.lang, labels=labels)
 
         if desc:
             # 描述回來太晚就丟棄，避免語音和目前畫面不同步
@@ -614,6 +652,10 @@ class OmniSensePipeline:
             else:
                 speak_local(desc, lang=self.lang, priority=PRIORITY_L3)
                 print(f"  ⏱ Layer 3 TTS (say)：{(time.perf_counter()-t_tts)*1000:.0f}ms 觸發")
+            log_event("tts_trigger", layer=used_layer,
+                      backend="edge" if used_layer == 2 and is_online() else "say",
+                      priority=PRIORITY_L2 if used_layer == 2 else PRIORITY_L3,
+                      text=desc)
 
     def process_stream(self, source):
         """攝影機或影片檔連續流。source 接 int (camera index) 或 str (檔案路徑)。

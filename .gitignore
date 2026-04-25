@@ -29,6 +29,7 @@ env/
 /tmp/
 /tmp_*
 omni_tts.mp3
+logs/*.jsonl
 
 # Env / secrets
 .env
