@@ -508,6 +508,10 @@ class OmniSensePipeline:
         self._capture_thread: Optional[threading.Thread] = None
         self._analyze_thread: Optional[threading.Thread] = None
 
+        self._last_detections: list = []
+        self._chat_busy = False
+        self._chat_lock = threading.Lock()
+
         import torch
         device = "mps" if torch.backends.mps.is_available() else "cpu"
         print(f"使用 device: {device}")
@@ -547,6 +551,13 @@ class OmniSensePipeline:
             self._ollama_ready = True
         except Exception as e:
             print(f"  ⚠️  Ollama warm up 失敗（Layer 3 不可用）：{e}")
+
+        print("Warm up ASR (mlx-whisper)...")
+        try:
+            import omni_sense_asr
+            omni_sense_asr.warmup_once()
+        except Exception as e:
+            print(f"  ⚠️  ASR warm up 失敗（chat 第一次可能慢）：{e}")
 
         print("Pipeline 就緒 (lang={})".format(lang))
         check_network()
@@ -733,6 +744,8 @@ class OmniSensePipeline:
         detections = self._detect(frame)
         t_detect = (time.perf_counter() - t0) * 1000
 
+        self._last_detections = detections  # cache for chat queries
+
         if not detections:
             return
 
@@ -825,6 +838,31 @@ class OmniSensePipeline:
                       priority=PRIORITY_L2 if used_layer == 2 else PRIORITY_L3,
                       text=desc)
 
+    def _handle_chat(self, frame, detections: list):
+        """Record 3s → transcribe → answer_query → speak. Runs in bg thread."""
+        try:
+            import omni_sense_asr
+            audio = omni_sense_asr.record_fixed(3.0)
+            question = omni_sense_asr.transcribe(audio, lang=self.lang)
+            print(f"[Chat] 問：{question!r}")
+            if not question.strip():
+                print("[Chat] 未偵測到語音")
+                return
+            import chat as _chat
+            answer = _chat.answer_query(question, frame, detections, lang=self.lang)
+            if answer:
+                print(f"[Chat] 答：{answer}")
+                speak_local(answer, lang=self.lang, priority=PRIORITY_L3)
+                log_event("chat_answer", question=question, answer=answer, lang=self.lang)
+            else:
+                print("[Chat] 無法回答")
+        except Exception as e:
+            print(f"[Chat] 錯誤：{e}")
+            log_event("error", where="_handle_chat", err=str(e))
+        finally:
+            with self._chat_lock:
+                self._chat_busy = False
+
     def process_stream(self, source):
         """攝影機或影片檔連續流。3 lanes：capture / analyze / display。
 
@@ -839,7 +877,7 @@ class OmniSensePipeline:
             raise RuntimeError(f"無法開啟 video source: {source}")
 
         print(f"開始串流 (source={source}, 分析 stride={FRAME_STRIDE})")
-        print("按 q 或 ESC 結束")
+        print("按 q 或 ESC 結束｜SPACE 問問題（錄音 3 秒）")
 
         self._stop_event.clear()
         capture_t = threading.Thread(target=self._capture_loop, args=(cap,), daemon=True)
@@ -870,6 +908,19 @@ class OmniSensePipeline:
                     self.set_language("en")
                 elif key == ord("3"):
                     self.set_language("ja")
+                elif key == ord(" "):
+                    with self._chat_lock:
+                        if not self._chat_busy:
+                            snapshot = current_frame.copy() if current_frame is not None else None
+                            if snapshot is not None:
+                                self._chat_busy = True
+                                dets = list(self._last_detections)
+                                threading.Thread(
+                                    target=self._handle_chat,
+                                    args=(snapshot, dets),
+                                    daemon=True,
+                                ).start()
+                                print("[Chat] 開始錄音（3 秒）...")
         finally:
             self._stop_event.set()
             capture_t.join(timeout=2)

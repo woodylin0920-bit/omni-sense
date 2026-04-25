@@ -31,6 +31,9 @@ def make_pipeline(lang: str = "zh", ollama_ready: bool = True) -> pipeline.OmniS
     p._frame_lock = threading.Lock()
     p._latest_frame = None
     p._stop_event = threading.Event()
+    p._last_detections = []
+    p._chat_busy = False
+    p._chat_lock = threading.Lock()
     return p
 
 
