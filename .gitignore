@@ -38,5 +38,6 @@ logs/*.jsonl
 
 # Large artifacts (選擇性 — YOLO weights 保留以便 clone 即跑)
 # *.pt
-# *.onnx
+*.onnx
 *.mlpackage
+.rapidocr_cache/
