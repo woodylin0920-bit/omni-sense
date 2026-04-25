@@ -686,7 +686,15 @@ class OmniSensePipeline:
 
     def _capture_loop(self, cap):
         """Continuously read frames into _latest_frame slot, dropping stale ones."""
+        import cv2 as _cv2
+        try:
+            fps = float(cap.get(_cv2.CAP_PROP_FPS)) or 30.0
+            is_camera = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT)) <= 0
+        except (TypeError, ValueError):
+            fps, is_camera = 30.0, True  # mock or unknown — no throttle
+        frame_delay = 1.0 / fps  # throttle to source FPS for video files
         while not self._stop_event.is_set():
+            t0 = time.time()
             ok, frame = cap.read()
             if not ok:
                 print("串流結束")
@@ -694,6 +702,11 @@ class OmniSensePipeline:
                 break
             with self._frame_lock:
                 self._latest_frame = frame
+            if not is_camera:
+                elapsed = time.time() - t0
+                wait = frame_delay - elapsed
+                if wait > 0:
+                    time.sleep(wait)
 
     def _analyze_loop(self):
         """Pull latest frame and run process_frame at FRAME_STRIDE cadence."""
