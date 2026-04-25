@@ -116,6 +116,58 @@ def test_ollama_describe_happy_path():
     assert "car" in messages[-1]["content"]
 
 
+# === Test 26: _looks_like_boilerplate 偵測中文 patterns ===
+def test_looks_like_boilerplate_detects_zh_patterns():
+    assert pipeline._looks_like_boilerplate("請您提供更多上下文", "zh") is True
+    assert pipeline._looks_like_boilerplate("您是我的助手", "zh") is True
+    assert pipeline._looks_like_boilerplate("", "zh") is True
+    assert pipeline._looks_like_boilerplate("  ", "zh") is True
+    assert pipeline._looks_like_boilerplate("前方有車輛和行人", "zh") is False
+    assert pipeline._looks_like_boilerplate("前方有狗", "zh") is False
+
+
+# === Test 27: template_fallback zh — 兩個物件 ===
+def test_template_fallback_zh_two_objects():
+    result = pipeline.template_fallback(["car", "person"], "zh")
+    assert result == "前方有車輛和行人"
+
+
+# === Test 28: template_fallback en ===
+def test_template_fallback_en():
+    result = pipeline.template_fallback(["bus", "bicycle"], "en")
+    assert result == "Ahead: a bus and a bicycle"
+
+
+# === Test 29: template_fallback ja ===
+def test_template_fallback_ja():
+    result = pipeline.template_fallback(["dog", "person"], "ja")
+    assert result == "前方に犬と人"
+
+
+# === Test 30: template_fallback 未知 label → default ===
+def test_template_fallback_unknown_label():
+    result = pipeline.template_fallback(["banana"], "zh")
+    assert result == "前方有障礙物"
+
+
+# === Test 31: Layer 3 boilerplate → template fallback ===
+def test_layer3_boilerplate_triggers_fallback():
+    """When Layer 3 returns boilerplate, template_fallback is substituted."""
+    p = make_pipeline()
+
+    with patch("pipeline.is_online", return_value=False), \
+         patch("pipeline.ollama_describe_stream",
+               return_value=iter(["請您提供更多上下文"])), \
+         patch("pipeline.speak_local") as mock_say, \
+         patch("builtins.print"):
+        p._background_describe(["car", "person"])
+
+    mock_say.assert_called_once()
+    spoken = mock_say.call_args[0][0]
+    assert "請您" not in spoken
+    assert "前方有" in spoken
+
+
 # === Test 25: ollama_describe_stream uses chat API + few-shot ===
 def test_ollama_describe_stream_uses_chat_api():
     """ollama_describe_stream yields raw chunks and uses chat API with system + few-shot."""

@@ -446,6 +446,50 @@ def ollama_describe(objects, lang: str = "zh") -> str:
     return _first_sentence(ollama_describe_stream(objects, lang), timeout_sec=5.0)
 
 
+# --- Layer 3 品質安全網 ---
+NOUN_BY_LANG = {
+    "zh": {"person": "行人", "car": "車輛", "bus": "公車",
+           "truck": "卡車", "bicycle": "腳踏車", "motorcycle": "機車",
+           "dog": "狗", "default": "障礙物"},
+    "en": {"person": "a person", "car": "a car", "bus": "a bus",
+           "truck": "a truck", "bicycle": "a bicycle",
+           "motorcycle": "a motorcycle", "dog": "a dog",
+           "default": "an obstacle"},
+    "ja": {"person": "人", "car": "車", "bus": "バス",
+           "truck": "トラック", "bicycle": "自転車",
+           "motorcycle": "バイク", "dog": "犬", "default": "障害物"},
+}
+
+_BAD_PATTERNS = {
+    "zh": ["請您", "您是", "上下文", "更多資訊", "提供更多", "我是"],
+    "en": ["i'm sorry", "i don't", "i cannot", "as an ai", "please provide"],
+    "ja": ["申し訳", "提供してください", "私は"],
+}
+
+
+def _looks_like_boilerplate(text: str, lang: str) -> bool:
+    """Return True if text looks like AI assistant boilerplate rather than a navigation alert."""
+    if not text or len(text.strip()) < 3:
+        return True
+    lowered = text.lower()
+    for pat in _BAD_PATTERNS.get(lang, _BAD_PATTERNS["zh"]):
+        if pat.lower() in lowered:
+            return True
+    return False
+
+
+def template_fallback(labels: list, lang: str) -> str:
+    """Deterministic safety net: always produces a valid navigation alert."""
+    nouns_dict = NOUN_BY_LANG.get(lang, NOUN_BY_LANG["zh"])
+    nouns = [nouns_dict.get(lb, nouns_dict["default"]) for lb in labels[:2]]
+    if lang == "zh":
+        return "前方有" + "和".join(nouns)
+    elif lang == "en":
+        return "Ahead: " + " and ".join(nouns)
+    else:  # ja
+        return "前方に" + "と".join(nouns)
+
+
 # --- 主 Pipeline ---
 class OmniSensePipeline:
     def __init__(self, lang: str = "zh"):
@@ -733,6 +777,12 @@ class OmniSensePipeline:
                 log_event("llm_first_sentence", layer=3, ms=elapsed, lang=self.lang, labels=labels)
 
         if desc:
+            # boilerplate guard：Layer 3 only（Gemini 品質夠，不檢查）
+            if used_layer == 3 and _looks_like_boilerplate(desc, self.lang):
+                log_event("ollama_boilerplate_rejected", raw=desc, labels=labels)
+                desc = template_fallback(labels, self.lang)
+                print(f"[Layer 3] ⚠️ Ollama 輸出疑似 boilerplate，改用 template fallback")
+
             # 描述回來太晚就丟棄，避免語音和目前畫面不同步
             # 用 perf_counter（monotonic）避免 NTP / 手動改時間造成誤判
             age_limit = MAX_DESC_AGE_SEC.get(used_layer, 1.2)
