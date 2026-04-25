@@ -36,19 +36,19 @@ def make_pipeline(lang: str = "zh", ollama_ready: bool = True) -> pipeline.OmniS
 
 # === Test 1: 離線時 Layer 3 接手（核心 regression） ===
 def test_offline_fallback_to_layer3():
-    """離線 → Gemini 不通 → Layer 3 ollama_describe 被呼叫 → 播報用 speak_local。"""
+    """離線 → Gemini 不通 → Layer 3 ollama_describe_stream 被呼叫 → 播報用 speak_local。"""
     p = make_pipeline()
 
     with patch("pipeline.is_online", return_value=False), \
          patch("pipeline.gemini_describe", return_value="") as mock_gemini, \
-         patch("pipeline.ollama_describe", return_value="前方有車輛，請注意") as mock_ollama, \
+         patch("pipeline.ollama_describe_stream", return_value=iter(["前方有車輛。"])) as mock_stream, \
          patch("pipeline.speak_local") as mock_say, \
          patch("pipeline.speak_edge") as mock_edge:
 
         p._background_describe(["car", "person"])
 
         mock_gemini.assert_not_called()  # 離線不該打 Gemini
-        mock_ollama.assert_called_once_with(["car", "person"], lang="zh")
+        mock_stream.assert_called_once_with(["car", "person"], lang="zh")
         mock_say.assert_called_once()  # Layer 3 必須用 speak_local
         mock_edge.assert_not_called()  # Layer 3 絕不能用 edge-tts
 
@@ -74,7 +74,7 @@ def test_layer3_never_calls_speak_edge():
 
     with patch("pipeline.is_online", return_value=True), \
          patch("pipeline.gemini_describe", return_value="") as _mock_gemini, \
-         patch("pipeline.ollama_describe", return_value="安全提醒"), \
+         patch("pipeline.ollama_describe_stream", return_value=iter(["安全提醒。"])), \
          patch("pipeline.speak_local") as mock_say, \
          patch("pipeline.speak_edge") as mock_edge:
 
@@ -94,26 +94,56 @@ def test_cooldown_gradient():
     assert p._cooldown("unknown") == 3.0  # 未知距離用保守值
 
 
-# === Test 5: ollama_describe 正常路徑（streaming）===
+# === Test 5: ollama_describe 正常路徑（chat API）===
 def test_ollama_describe_happy_path():
-    """sys.modules mock 整個 ollama，stream=True 版本。"""
+    """sys.modules mock — ollama.chat stream 版本。"""
     fake_stream = iter([
-        {"response": "前方有車，"},
-        {"response": "請小心。"},
+        {"message": {"content": "前方有車。"}},
     ])
     mock_ollama = MagicMock()
-    mock_ollama.generate.return_value = fake_stream
+    mock_ollama.chat.return_value = fake_stream
 
     with patch.dict("sys.modules", {"ollama": mock_ollama}):
         result = pipeline.ollama_describe(["car"], lang="zh")
 
-    assert result == "前方有車，請小心。"  # first sentence including ending
-    mock_ollama.generate.assert_called_once()
-    _, kwargs = mock_ollama.generate.call_args
+    assert result == "前方有車。"
+    mock_ollama.chat.assert_called_once()
+    _, kwargs = mock_ollama.chat.call_args
     assert kwargs["model"] == pipeline.OLLAMA_MODEL
     assert kwargs.get("stream") is True
-    assert "繁體中文" in kwargs["prompt"]
-    assert "car" in kwargs["prompt"]
+    messages = kwargs["messages"]
+    assert messages[0]["role"] == "system"
+    assert "car" in messages[-1]["content"]
+
+
+# === Test 25: ollama_describe_stream uses chat API + few-shot ===
+def test_ollama_describe_stream_uses_chat_api():
+    """ollama_describe_stream yields raw chunks and uses chat API with system + few-shot."""
+    fake_chunks = [
+        {"message": {"content": "前方"}},
+        {"message": {"content": "有車"}},
+        {"message": {"content": "。"}},
+    ]
+    mock_ollama = MagicMock()
+    mock_ollama.chat.return_value = iter(fake_chunks)
+
+    with patch.dict("sys.modules", {"ollama": mock_ollama}):
+        result = list(pipeline.ollama_describe_stream(["car"], "zh"))
+
+    assert result == ["前方", "有車", "。"]
+    mock_ollama.chat.assert_called_once()
+    _, kwargs = mock_ollama.chat.call_args
+    assert kwargs["model"] == pipeline.OLLAMA_MODEL
+    assert kwargs.get("stream") is True
+    messages = kwargs["messages"]
+    # system role at index 0
+    assert messages[0]["role"] == "system"
+    # 3 few-shot pairs (6 msgs) + 1 final user = 7 non-system messages
+    user_msgs = [m for m in messages if m["role"] == "user"]
+    asst_msgs = [m for m in messages if m["role"] == "assistant"]
+    assert len(user_msgs) == 4   # 3 few-shot + 1 final
+    assert len(asst_msgs) == 3   # 3 few-shot
+    assert "car" in messages[-1]["content"]
 
 
 # === Test 6: is_online 測的是 Gemini endpoint，不是 google.com ===

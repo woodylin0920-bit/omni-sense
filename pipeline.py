@@ -84,6 +84,42 @@ TEMPLATES = {
 # say 的語音代號
 SAY_VOICE = {"zh": "Meijia", "en": "Samantha", "ja": "Kyoko"}
 
+# --- Layer 3 Ollama prompt 設定（chat API + system + few-shot）---
+OLLAMA_SYSTEM = {
+    "zh": (
+        "你只負責把偵測到的物件改寫成 12 字內的繁體中文導航提醒。"
+        "直接輸出提醒，不解釋、不問問題、不要使用「您」「請」。"
+        "格式：「前方有 X 和 Y」。"
+    ),
+    "en": (
+        "You convert detected objects into a navigation alert under 10 words. "
+        "Output the alert directly. No explanations, no questions, no apologies. "
+        "Format: 'Ahead: X and Y'."
+    ),
+    "ja": (
+        "検出された物体を10文字以内の日本語ナビ警告に変換するだけ。"
+        "直接出力、説明・質問・謝罪なし。形式：「前方にXとY」。"
+    ),
+}
+
+OLLAMA_FEWSHOT = {
+    "zh": [
+        ("car, person", "前方有車輛和行人"),
+        ("bus, bicycle", "前方有公車和腳踏車"),
+        ("dog, person", "前方狗和行人靠近"),
+    ],
+    "en": [
+        ("car, person", "Ahead: a car and a person"),
+        ("bus, bicycle", "Ahead: a bus and a bicycle"),
+        ("dog, person", "Ahead: a dog and a person"),
+    ],
+    "ja": [
+        ("car, person", "前方に車と人"),
+        ("bus, bicycle", "前方にバスと自転車"),
+        ("dog, person", "前方に犬と人"),
+    ],
+}
+
 # Gemini API endpoint（用於 is_online 偵測真正要連的服務）
 GEMINI_ENDPOINT_HOST = "generativelanguage.googleapis.com"
 GEMINI_ENDPOINT_PORT = 443
@@ -367,28 +403,47 @@ def gemini_describe(objects, lang: str = "zh") -> str:
 
 
 # --- Layer 3: 本地 Ollama + Gemma 3 1B ---
-def ollama_describe(objects, lang: str = "zh") -> str:
-    """離線 fallback：本地 LLM 串流取第一句。"""
+def ollama_describe_stream(objects, lang: str = "zh"):
+    """Yields text chunks from ollama.chat with system role + few-shot examples.
+
+    chat API beats generate for 1B models: system role separation prevents
+    the model from treating the prompt as a dialogue opening.
+    """
     import ollama
 
-    prompts = {
-        "zh": f"視障導航助理。用一句話（15字以內）用繁體中文告訴視障者：{', '.join(objects)}。",
-        "en": f"Visual navigation assistant. One sentence (<15 words) in English: {', '.join(objects)}.",
-        "ja": f"視覚障害者のナビ。一言（15字以内）日本語で：{', '.join(objects)}。",
-    }
-    prompt = prompts.get(lang, prompts["zh"])
+    sys_msg = OLLAMA_SYSTEM.get(lang, OLLAMA_SYSTEM["zh"])
+    fewshot = OLLAMA_FEWSHOT.get(lang, OLLAMA_FEWSHOT["zh"])
+    messages = [{"role": "system", "content": sys_msg}]
+    for q, a in fewshot:
+        messages.append({"role": "user", "content": q})
+        messages.append({"role": "assistant", "content": a})
+    messages.append({"role": "user", "content": ", ".join(objects)})
+
     try:
-        resp_stream = ollama.generate(
+        stream = ollama.chat(
             model=OLLAMA_MODEL,
-            prompt=prompt,
+            messages=messages,
+            options={
+                "num_predict": 24,
+                "temperature": 0.1,
+                "stop": ["\n", "。", ".", "！", "!"],
+                "keep_alive": "10m",
+            },
             stream=True,
-            options={"num_predict": 16, "temperature": 0.3, "keep_alive": "10m"},
         )
-        chunks = (chunk["response"] for chunk in resp_stream)
-        return _first_sentence(chunks, timeout_sec=5.0)
+        for chunk in stream:
+            content = chunk.get("message", {}).get("content", "")
+            if content:
+                yield content
     except Exception as e:
         print(f"[Layer 3] Ollama 失敗：{e}")
-        return ""
+        log_event("error", where="ollama_describe_stream", err=str(e))
+        return
+
+
+def ollama_describe(objects, lang: str = "zh") -> str:
+    """Thin wrapper: collect first sentence from ollama_describe_stream."""
+    return _first_sentence(ollama_describe_stream(objects, lang), timeout_sec=5.0)
 
 
 # --- 主 Pipeline ---
@@ -669,7 +724,7 @@ class OmniSensePipeline:
 
         if not desc and self._ollama_ready:
             t = time.perf_counter()
-            desc = ollama_describe(labels, lang=self.lang)
+            desc = _first_sentence(ollama_describe_stream(labels, lang=self.lang), timeout_sec=5.0)
             if desc:
                 used_layer = 3
                 elapsed = (time.perf_counter() - t) * 1000
