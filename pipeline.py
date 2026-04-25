@@ -25,7 +25,15 @@ from typing import Optional
 _HERE = Path(__file__).resolve().parent
 _WARMUP_IMG = _HERE / "bus.jpg"
 
-YOLO_MODEL = str(_HERE / "yolo26s.pt")
+_MLPACKAGE = _HERE / "yolo26s.mlpackage"
+_PTFILE    = _HERE / "yolo26s.pt"
+
+
+def _resolve_yolo_path() -> str:
+    """Return CoreML mlpackage if present, else .pt. Checked at runtime for testability."""
+    return str(_MLPACKAGE if _MLPACKAGE.exists() else _PTFILE)
+
+
 OLLAMA_MODEL = "gemma3:1b"
 FRAME_STRIDE = 6  # 每 6 幀跑 1 次 pipeline（~5fps 分析 @ 30fps 輸入）
 MAX_DESC_AGE_SEC = {2: 1.2, 3: 20.0}  # Layer 2 (Gemini ~500ms) / Layer 3 (Gemma3 cold start 18s + buffer)
@@ -402,9 +410,11 @@ class OmniSensePipeline:
         device = "mps" if torch.backends.mps.is_available() else "cpu"
         print(f"使用 device: {device}")
 
-        print("載入 YOLO26s...")
+        yolo_path = _resolve_yolo_path()
+        fmt = "mlpackage" if yolo_path.endswith(".mlpackage") else "pt"
+        print(f"載入 YOLO26s ({fmt})...")
         from ultralytics import YOLO
-        self.model = YOLO(YOLO_MODEL)
+        self.model = YOLO(yolo_path)
         try:
             self.model.to(device)
         except Exception as e:

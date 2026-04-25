@@ -194,12 +194,14 @@ def test_bg_worker_single_thread():
 
 # === Test 9: 資源路徑是絕對路徑（相對 pipeline.py 目錄）===
 def test_absolute_paths():
-    """YOLO_MODEL 與 _WARMUP_IMG 是以 pipeline.py 所在目錄為基準的絕對路徑。"""
+    """_PTFILE, _resolve_yolo_path, _WARMUP_IMG 均是以 pipeline.py 目錄為基準的絕對路徑。"""
     pipeline_dir = os.path.dirname(os.path.abspath(pipeline.__file__))
 
-    assert os.path.isabs(pipeline.YOLO_MODEL), "YOLO_MODEL 應為絕對路徑"
-    assert pipeline.YOLO_MODEL.startswith(pipeline_dir)
-    assert pipeline.YOLO_MODEL.endswith("yolo26s.pt")
+    assert str(pipeline._PTFILE).startswith(pipeline_dir)
+    assert str(pipeline._PTFILE).endswith("yolo26s.pt")
+
+    yolo_path = pipeline._resolve_yolo_path()
+    assert os.path.isabs(yolo_path), "_resolve_yolo_path() 應回傳絕對路徑"
 
     warmup = str(pipeline._WARMUP_IMG)
     assert os.path.isabs(warmup), "_WARMUP_IMG 應為絕對路徑"
@@ -463,6 +465,26 @@ def test_process_stream_clean_shutdown():
     assert mock_cv2.destroyAllWindows.called
 
 
+# === Test 24: _resolve_yolo_path mlpackage 優先 ===
+def test_yolo_model_path_prefers_mlpackage(tmp_path):
+    """_resolve_yolo_path returns mlpackage path when present, .pt otherwise."""
+    fake_mlpkg = tmp_path / "yolo26s.mlpackage"
+    fake_pt = tmp_path / "yolo26s.pt"
+    fake_pt.touch()  # .pt always present as fallback
+
+    # mlpackage exists → prefer it
+    fake_mlpkg.mkdir()
+    with patch.object(pipeline, "_MLPACKAGE", fake_mlpkg), \
+         patch.object(pipeline, "_PTFILE", fake_pt):
+        assert pipeline._resolve_yolo_path().endswith(".mlpackage")
+
+    # mlpackage absent → fall back to .pt
+    fake_mlpkg.rmdir()
+    with patch.object(pipeline, "_MLPACKAGE", fake_mlpkg), \
+         patch.object(pipeline, "_PTFILE", fake_pt):
+        assert pipeline._resolve_yolo_path().endswith(".pt")
+
+
 # === Test 21: autouse fixture 停掉 event log ===
 def test_event_log_disabled_in_tests():
     """conftest autouse fixture ensures _event_log_fp stays None during tests."""
@@ -510,7 +532,7 @@ def test_init_lazy_import_path():
     }
 
     with patch.dict("sys.modules", sys_mocks), \
-         patch("pipeline.YOLO_MODEL", "/fake/yolo.pt"), \
+         patch("pipeline._resolve_yolo_path", return_value="/fake/yolo.pt"), \
          patch("pipeline._WARMUP_IMG", Path("/fake/bus.jpg")), \
          patch("pipeline.check_network"), \
          patch("builtins.print"):

@@ -68,6 +68,17 @@ python pipeline.py --source bus.jpg
 
 Demo 中鍵盤：`1` 中文 `2` 英文 `3` 日文 `q` / `ESC` 結束。
 
+### Demo 加速（選用）
+
+把 YOLO 轉 CoreML，M1 上 inference 從 ~71ms → ~14ms（約 5x）：
+
+```bash
+./venv/bin/python scripts/export_coreml.py
+```
+
+pipeline.py 啟動時會自動偵測 `yolo26s.mlpackage`，存在就用、沒有就 fallback 到 `.pt`。
+`yolo26s.mlpackage` 已 gitignored（可重新產生），不會進 repo。
+
 ### 跑 test
 
 ```bash
