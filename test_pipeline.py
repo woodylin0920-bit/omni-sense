@@ -399,6 +399,13 @@ def test_log_event_noop_when_uninitialized():
         pipeline._event_log_fp = old_fp
 
 
+# === Test 21: autouse fixture 停掉 event log ===
+def test_event_log_disabled_in_tests():
+    """conftest autouse fixture ensures _event_log_fp stays None during tests."""
+    pipeline.log_event("foo", x=1)  # must not raise
+    assert pipeline._event_log_fp is None
+
+
 # === Test 11: ultralytics lazy import — import pipeline 不觸發 torch 載入 ===
 def test_ultralytics_not_imported_at_module_level():
     """import pipeline 不應在 module 層觸發 ultralytics/torch。
@@ -442,7 +449,6 @@ def test_init_lazy_import_path():
          patch("pipeline.YOLO_MODEL", "/fake/yolo.pt"), \
          patch("pipeline._WARMUP_IMG", Path("/fake/bus.jpg")), \
          patch("pipeline.check_network"), \
-         patch("pipeline.init_event_log"), \
          patch("builtins.print"):
 
         p = pipeline.OmniSensePipeline(lang="zh")
