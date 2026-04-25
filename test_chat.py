@@ -97,6 +97,37 @@ def test_no_detection_no_ocr_skips_ollama(monkeypatch):
     assert ans  # returns a non-empty fallback string
 
 
+def test_sign_question_with_empty_ocr_skips_ollama(monkeypatch):
+    """Asking '招牌寫什麼' with empty OCR returns fixed reply, no Ollama call."""
+    called = []
+    fake_ollama = types.SimpleNamespace()
+    fake_ollama.chat = lambda *a, **kw: called.append(1) or {"message": {"content": "x"}}
+    monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
+
+    fake_ocr = types.SimpleNamespace()
+    fake_ocr.ocr_full_frame = lambda *a, **kw: []
+    monkeypatch.setitem(sys.modules, "omni_sense_ocr", fake_ocr)
+    monkeypatch.delitem(sys.modules, "chat", raising=False)
+
+    import chat
+    ans = chat.answer_query("前面那個招牌寫什麼？", _frame(), _dets(), lang="zh")
+    assert called == []
+    assert "沒有可辨識的文字" in ans
+
+
+def test_sign_question_with_ocr_calls_ollama(monkeypatch):
+    """Sign question with OCR text present should still call Ollama (not skip)."""
+    called = []
+    fake_ollama = types.SimpleNamespace()
+    fake_ollama.chat = lambda *a, **kw: called.append(1) or {"message": {"content": "前方招牌寫著「某商店」。"}}
+    monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
+    monkeypatch.delitem(sys.modules, "chat", raising=False)
+    import chat
+    ans = chat.answer_query("前面那個招牌寫什麼？", _frame(), _dets(), lang="zh")
+    assert called == [1]
+    assert "某商店" in ans
+
+
 def test_answer_query_ollama_failure_returns_empty(monkeypatch):
     failing_ollama = types.SimpleNamespace()
     failing_ollama.chat = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("ollama down"))

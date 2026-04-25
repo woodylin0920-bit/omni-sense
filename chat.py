@@ -73,6 +73,25 @@ _BAD_PATTERNS = {
     "ja": ["判断できません", "わかりません", "申し訳"],
 }
 
+# Sign / text-related question keywords — when these appear AND OCR is empty,
+# skip Ollama entirely to avoid few-shot leakage and hallucinated sign content.
+_SIGN_KEYWORDS = {
+    "zh": ["招牌", "牌子", "寫什麼", "寫著", "字", "文字", "標誌", "標示"],
+    "en": ["sign", "written", "text", "says", "say", "label"],
+    "ja": ["看板", "書い", "文字", "標識"],
+}
+
+_NO_TEXT_REPLY = {
+    "zh": "畫面中沒有可辨識的文字。",
+    "en": "No readable text in the scene.",
+    "ja": "画面に判別できる文字はありません。",
+}
+
+
+def _is_sign_question(question: str, lang: str) -> bool:
+    lower = question.lower()
+    return any(kw in lower for kw in _SIGN_KEYWORDS.get(lang, _SIGN_KEYWORDS["zh"]))
+
 
 def _filter_ocr(ocr_results: list) -> list:
     """Remove timestamp watermarks and other noise from OCR results."""
@@ -154,6 +173,10 @@ def answer_query(
 
     if not detections and not clean_ocr:
         return {"zh": "前方目前無偵測到物件。", "en": "Nothing detected in front.", "ja": "前方に何も検出されていません。"}.get(lang, "")
+
+    # Sign-question guard: if asking about a sign/text but OCR is empty, return fixed reply.
+    if not clean_ocr and _is_sign_question(question, lang):
+        return _NO_TEXT_REPLY.get(lang, _NO_TEXT_REPLY["zh"])
 
     context = _build_context(detections, clean_ocr, lang)
     system = _SYSTEM.get(lang, _SYSTEM["zh"])
