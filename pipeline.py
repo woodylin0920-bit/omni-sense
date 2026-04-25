@@ -248,6 +248,22 @@ def estimate_distance_depth(box, depth_map):
     return "far", round(ratio, 2)
 
 
+def estimate_distance_bbox(box, frame_h: int, frame_w: int) -> tuple[str, None]:
+    """Coarse near/mid/far heuristic from bbox bottom position + area ratio.
+
+    Used when depth map is unavailable (LLM inference in progress).
+    Returns (dist_label, None) — second value matches estimate_distance_depth signature.
+    """
+    x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+    bottom_y_ratio = y2 / frame_h
+    bbox_area_ratio = (x2 - x1) * (y2 - y1) / (frame_h * frame_w)
+    if bottom_y_ratio > 0.75 or bbox_area_ratio > 0.15:
+        return "near", None
+    elif bottom_y_ratio > 0.55 or bbox_area_ratio > 0.05:
+        return "mid", None
+    return "far", None
+
+
 # --- Layer 2: Gemini Flash ---
 def gemini_describe(objects, lang: str = "zh") -> str:
     """雲端 LLM 場景描述。失敗回空字串。"""
@@ -412,9 +428,7 @@ class OmniSensePipeline:
                 if depth_map is not None:
                     dist, depth_val = estimate_distance_depth(box, depth_map)
                 else:
-                    # Depth 跳過時不用 bbox 估距離——大遠物 vs 小近物容易誤判。
-                    # 保守標記 unknown（3s cooldown）避免 bbox 假警示搶 0.5s near 頻率。
-                    dist, depth_val = "unknown", None
+                    dist, depth_val = estimate_distance_bbox(box, h, w)
                 hp_boxes.append((label, dist, float(box.conf), depth_val, box))
 
         dist_order = {"near": 0, "mid": 1, "far": 2, "unknown": 3}

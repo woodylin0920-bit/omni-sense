@@ -270,6 +270,31 @@ def test_bg_busy_skips_depth():
     p._bg_thread.join(timeout=1)
 
 
+# === Test 14: estimate_distance_bbox — near (大 bbox 在畫面下方) ===
+def test_estimate_distance_bbox_near():
+    """Large bbox at bottom of frame → near."""
+    mock_box = MagicMock()
+    mock_box.xyxy = [MagicMock()]
+    # bottom_y_ratio = 450/480 = 0.9375 > 0.75 → near
+    mock_box.xyxy[0].tolist.return_value = [100.0, 300.0, 500.0, 450.0]
+    dist, depth_val = pipeline.estimate_distance_bbox(mock_box, 480, 640)
+    assert dist == "near"
+    assert depth_val is None
+
+
+# === Test 15: estimate_distance_bbox — far (小 bbox 在畫面中間) ===
+def test_estimate_distance_bbox_far():
+    """Small bbox in middle of frame → far."""
+    mock_box = MagicMock()
+    mock_box.xyxy = [MagicMock()]
+    # bottom_y_ratio = 230/480 ≈ 0.479 < 0.55
+    # bbox_area_ratio = 30*30 / (480*640) ≈ 0.003 < 0.05 → far
+    mock_box.xyxy[0].tolist.return_value = [300.0, 200.0, 330.0, 230.0]
+    dist, depth_val = pipeline.estimate_distance_bbox(mock_box, 480, 640)
+    assert dist == "far"
+    assert depth_val is None
+
+
 # === Test 11: ultralytics lazy import — import pipeline 不觸發 torch 載入 ===
 def test_ultralytics_not_imported_at_module_level():
     """import pipeline 不應在 module 層觸發 ultralytics/torch。
