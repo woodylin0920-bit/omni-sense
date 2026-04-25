@@ -4,6 +4,35 @@
 
 ---
 
+## 🟢 2026-04-26 Chat MVP Phase 3 完工（完整 push-to-talk Q&A）
+
+**完成**：
+- chat.py — orchestrator（YOLO detections + OCR → Gemma 3 1B → say）
+- test_chat.py — 6 unit tests，hermetic（51/51 全綠）
+- pipeline.py — SPACE 鍵觸發 chat（錄音 3s → 轉錄 → answer_query → speak_local）
+- pipeline.py — ASR warmup_once() 在 pipeline 啟動時跑（攤銷 cold 2.4s）
+- pipeline.py — capture loop FPS throttle fix（影片不再瞬間讀完）
+
+**使用方式**：
+```bash
+~/venvs/omni-sense-venv/bin/python pipeline.py --source 0 --lang zh
+# 啟動後按 SPACE → 說話 3 秒 → 自動回答
+```
+
+**Chat MVP 完整流程**：
+SPACE → sounddevice 錄 3s → mlx-whisper 轉錄（137ms warm）
+→ OCR full frame + YOLO cache → Gemma 3 1B 回答（1-4s）→ say 播報
+
+**已知限制**：
+- 3s 固定錄音（非真正 push-to-release，後者需 key-up 偵測）
+- real-world WER 比 TTS-clean 差，實測後再調整
+
+**下一步**（依優先度）：
+1. **🔴 去訪談視障者**（#1 blocker，技術已就緒）
+2. 開攝影機端到端測試：說「前面那個招牌寫什麼？」看回答品質
+
+---
+
 ## 🟢 2026-04-26 Chat MVP Phase 2 完工（ASR 基礎）
 
 **完成**：
