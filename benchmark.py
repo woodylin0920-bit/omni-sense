@@ -192,6 +192,46 @@ def bench_ocr(samples_dir="samples", n_warm=3):
         print(f"  warm  avg over {len(warm_times)} runs: {avg:7.1f}ms")
 
 
+def bench_asr(samples_dir="samples", n_warm=3):
+    """ASR cold + warm latency on TTS-generated baseline wavs.
+    NOTE: TTS audio is easy for whisper — real-world WER will be higher."""
+    import time
+    from pathlib import Path
+    import omni_sense_asr
+
+    candidates = []
+    for name, lang in [("test_zh.wav", "zh"), ("test_en.wav", "en")]:
+        p = Path(samples_dir) / name
+        if p.exists():
+            candidates.append((name, str(p), lang))
+
+    if not candidates:
+        print("\n[asr] no sample wavs found; run: bash scripts/make_test_audio.sh")
+        return
+
+    print("\n=== ASR (mlx-whisper base) ===")
+
+    # Cold
+    name, path, lang = candidates[0]
+    t0 = time.perf_counter()
+    text = omni_sense_asr.transcribe_path(path, lang=lang)
+    cold_ms = (time.perf_counter() - t0) * 1000
+    print(f"  cold   {name}: {cold_ms:7.1f}ms  ->  {text!r}")
+
+    # Warm
+    warm_times = []
+    for name, path, lang in candidates:
+        for _ in range(n_warm):
+            t0 = time.perf_counter()
+            txt = omni_sense_asr.transcribe_path(path, lang=lang)
+            warm_times.append((time.perf_counter() - t0) * 1000)
+        print(f"  warm   {name}: -> {txt!r}")
+    if warm_times:
+        avg = sum(warm_times) / len(warm_times)
+        print(f"  warm  avg over {len(warm_times)} runs: {avg:7.1f}ms")
+
+
 if __name__ == "__main__":
     main()
     bench_ocr()
+    bench_asr()
