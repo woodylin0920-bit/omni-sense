@@ -91,6 +91,8 @@ pipeline.py 啟動時會自動偵測 `yolo26s.mlpackage`，存在就用、沒有
 ./venv/bin/python benchmark.py
 ```
 
+> benchmark.py 也會跑 OCR cold/warm（RapidOCR）— 為 Phase 3 chat latency budget 提供基準。
+
 ---
 
 ## 硬體

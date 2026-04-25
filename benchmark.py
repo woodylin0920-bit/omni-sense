@@ -144,5 +144,54 @@ def main():
     print("=" * 55)
 
 
+def bench_ocr(samples_dir="samples", n_warm=3):
+    """OCR cold + warm latency on real sample images."""
+    import time
+    from pathlib import Path
+    import cv2
+    import omni_sense_ocr
+
+    imgs = []
+    for name in ["people_street.jpg", "bus.jpg", "test_street.mp4"]:
+        p = Path(samples_dir) / name
+        if not p.exists():
+            continue
+        if p.suffix == ".mp4":
+            cap = cv2.VideoCapture(str(p))
+            ok, frame = cap.read()
+            cap.release()
+            if ok:
+                imgs.append((name, frame))
+        else:
+            frame = cv2.imread(str(p))
+            if frame is not None:
+                imgs.append((name, frame))
+
+    if not imgs:
+        print("[ocr] no sample images found, skipping")
+        return
+
+    print("\n=== OCR (RapidOCR-onnxruntime) ===")
+
+    # Cold
+    name, frame = imgs[0]
+    t0 = time.perf_counter()
+    out = omni_sense_ocr.ocr_full_frame(frame)
+    cold_ms = (time.perf_counter() - t0) * 1000
+    print(f"  cold   {name}: {cold_ms:7.1f}ms  ({len(out)} regions)")
+
+    # Warm
+    warm_times = []
+    for name, frame in imgs:
+        for _ in range(n_warm):
+            t0 = time.perf_counter()
+            omni_sense_ocr.ocr_full_frame(frame)
+            warm_times.append((time.perf_counter() - t0) * 1000)
+    if warm_times:
+        avg = sum(warm_times) / len(warm_times)
+        print(f"  warm  avg over {len(warm_times)} runs: {avg:7.1f}ms")
+
+
 if __name__ == "__main__":
     main()
+    bench_ocr()
