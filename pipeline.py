@@ -89,6 +89,12 @@ PRIORITY_L1 = 1  # 緊急警告（macOS say）
 PRIORITY_L2 = 2  # Gemini 描述（edge-tts）
 PRIORITY_L3 = 3  # Ollama 描述（macOS say）
 
+RATE_BY_PRIORITY = {
+    1: 220,  # L1 emergency, 快但清楚
+    2: 175,  # L2 description, 自然
+    3: 175,  # L3 description, 自然
+}
+
 _audio_lock = threading.Lock()
 _current_audio_proc = None
 _current_audio_priority = 99  # 99 = 無音訊播放中
@@ -164,8 +170,9 @@ def speak_local(text: str, lang: str = "zh", priority: int = PRIORITY_L3):
         if _audio_alive_unlocked() and priority > _current_audio_priority:
             return  # 當前音訊優先級更高，不搶
         _stop_current_audio_unlocked()
+        rate = str(RATE_BY_PRIORITY.get(priority, 175))
         proc = subprocess.Popen(
-            ["say", "-v", voice, "-r", "200", text],
+            ["say", "-v", voice, "-r", rate, text],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

@@ -233,6 +233,32 @@ def test_speak_edge_unique_tempfile():
             pass
 
 
+# === Test 16: speak_local 語速依 priority 分級 ===
+def test_speak_local_rate_per_priority():
+    """L1 speak_local uses rate 220; L3 uses rate 175."""
+    with patch("subprocess.Popen") as mock_popen:
+        mock_popen.return_value.poll.return_value = None
+
+        pipeline._current_audio_proc = None
+        pipeline._current_audio_priority = 99
+        pipeline.speak_local("緊急", "zh", priority=pipeline.PRIORITY_L1)
+        l1_cmd = mock_popen.call_args_list[0][0][0]
+
+        pipeline._current_audio_proc = None
+        pipeline._current_audio_priority = 99
+        pipeline.speak_local("描述", "zh", priority=pipeline.PRIORITY_L3)
+        l3_cmd = mock_popen.call_args_list[1][0][0]
+
+    pipeline._current_audio_proc = None
+    pipeline._current_audio_priority = 99
+    pipeline._current_audio_started = 0.0
+
+    assert "-r" in l1_cmd
+    assert l1_cmd[l1_cmd.index("-r") + 1] == "220"
+    assert "-r" in l3_cmd
+    assert l3_cmd[l3_cmd.index("-r") + 1] == "175"
+
+
 # === Test 13: bg_busy 時跳過 Depth（Phase 0 止血修改）===
 def test_bg_busy_skips_depth():
     """bg worker 在跑時，_detect 跳過 depth_pipe，改用 bbox heuristic。"""
