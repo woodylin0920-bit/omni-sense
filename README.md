@@ -97,7 +97,7 @@ export GEMINI_API_KEY="your-key"
 ### 驗證安裝
 
 ```bash
-~/venvs/omni-sense-venv/bin/pytest -q   # 應該 55 passed
+~/venvs/omni-sense-venv/bin/pytest -q   # 應該 69 passed
 ```
 
 ---
@@ -179,6 +179,9 @@ M1 Air 8GB，warm 狀態：
 | ASR mlx-whisper base | ~137ms warm / ~2.4s cold | scripts/verify_asr.sh |
 | OCR RapidOCR | ~443ms warm / ~823ms cold | benchmark.py |
 | **Chat 端到端**（含 OCR + Ollama） | **~667ms 平均** | scripts/test_chat_video.py |
+| Layer 1 watchdog 偵測 worker 死亡 | <1s | finally cleanup verified |
+
+> 視障 UX hard requirements：所有 error path 走 announce_error()（短提示音 + Layer 1 say），禁止僅 print。詳見 codex security audit 紀錄（2026-04-27）。
 
 跑 `./venv/bin/python benchmark.py` 自己量。
 
@@ -210,14 +213,15 @@ M1 Air 8GB，warm 狀態：
 ## 測試
 
 ```bash
-./venv/bin/pytest -v             # 55 tests, ~8s（全部 mock，不載模型）
+./venv/bin/pytest -v             # 69 tests, ~10s（全部 mock，不載模型）
 ./venv/bin/python benchmark.py   # 含 YOLO / Depth / Ollama / OCR / ASR
 ```
 
 測試覆蓋：
-- pipeline 邏輯（cooldown、HIGH_PRIORITY、boilerplate fallback、bg worker drop-if-busy 等 27 項）
+- pipeline 邏輯（cooldown、HIGH_PRIORITY、boilerplate fallback、bg worker drop-if-busy、real-shape warmup regression、watchdog、log self-disable）
 - ASR / OCR / chat 三個獨立模組
 - chat sign-question guard、timestamp filter、no-detect skip-Ollama
+- **2026-04-27 新增**：announce_error helper、log_event self-disable、OCR injection guard、watchdog、subprocess.wait、edge-tts fallback
 
 ---
 
@@ -231,6 +235,21 @@ M1 Air 8GB，warm 狀態：
 
 ---
 
+## 已知問題
+
+| 嚴重度 | 問題 | 追蹤 |
+|---|---|---|
+| P0 (待驗證) | OCR prompt injection guard 已實作，**真實機尚未驗證**（需要對著惡意招牌按 SPACE 問「招牌寫什麼」） | |
+| P1 | Ctrl+C 產生 uncaught KeyboardInterrupt traceback（finally 區塊有跑、resource 有釋放，純 cosmetic） | |
+| P1 | log_event 無 rotation，長時間執行 logs/*.jsonl 會無限增長 | |
+| P2 | samples/test_street.mp4 已搬到 samples/archive/，部分文檔/script 路徑未更新 | |
+| P2 | YOLO `.mlpackage` 不接受 `.to(mps)`，啟動印 warning，自動 fallback CPU（pre-existing） | |
+| Future | ASR 固定錄 3 秒，非真正 push-to-release | |
+| Future | 真實環境 ASR WER 未測（目前只用 TTS 合成 baseline） | |
+| 🔴 Project | 視障者 user research = 0 / 10，shipping 前必須做 | |
+
+---
+
 ## 狀態與 Roadmap
 
 - ✅ Layer 1 YOLO + 本地 TTS
@@ -241,8 +260,11 @@ M1 Air 8GB，warm 狀態：
 - ✅ 距離分級 cooldown / HIGH_PRIORITY 物件過濾
 - ✅ **Chat MVP — push-to-talk ASR + OCR + Gemma 問答（SPACE 鍵）**
 - ✅ Chat 品質 guard（few-shot 洩漏、timestamp 過濾、sign-question 短路）
-- 🔲 手機 / 胸前硬體 port
+- ✅ **Safety hardening (2026-04-27)**：announce_error 統一錯誤回饋、OCR prompt injection guard（deterministic sign-question 短路）、log_event self-disable、worker thread watchdog、edge-tts fallback、subprocess.wait（codex 審查 6 P0 已修）
+- ✅ **Real-shape warmup**：process_stream 開頭用第一幀預編 MPS/CoreML kernel，避免短影片整段靜音
 - 🔲 視障者 user research（10 人訪談目標）— **下一步最高優先**
+- 🔲 Test 3 (OCR injection 實機驗證) + Test 4 (Ollama down → watchdog) — **ship-ready 前最後 gate**
+- 🔲 手機 / 胸前硬體 port
 - 🔲 haptic 回饋
 - 🔲 升級 Gemma 4B（待 16GB 機器）
 

@@ -4,6 +4,41 @@
 
 ---
 
+## 🟢 2026-04-27 Codex 安全審查 + 6 P0 修補完工
+
+**Verdict 變化**：codex consult 模式 audit 出 6 P0（mid-Apr-27 evening）→ 修補後 not_ready → ready_pending_smoke
+
+**Commits**:
+- 71cad2b fix: warm up YOLO+Depth at real video resolution (修「影片跑完才出聲音」bug)
+- 80bea85 test: regression for warm-up invariant
+- d55a928 fix(safety): announce_error helper, log_event self-disable, OCR injection guard
+- 0c22648 fix(resilience): watchdog, VideoCapture cleanup, subprocess.wait, edge-tts fallback
+
+**6 P0 對照表**：
+| # | 問題 | 修補位置 |
+|---|---|---|
+| 1 | OCR prompt injection | chat.py — _is_sign_question + _deterministic_sign_answer + _looks_like_injection |
+| 2 | mic/Ollama/camera silent fail | pipeline.py — announce_error() helper |
+| 3 | log_event recursive crash on disk full | pipeline.py — _log_disabled self-disable |
+| 4 | No watchdog on dead worker threads | pipeline.py — process_stream watchdog @ 1s cadence |
+| 5 | TTS not guaranteed delivery | 全 error path refactor 走 announce_error |
+| 6 | NamedTemporaryFile leak in speak_edge | pipeline.py — outer try/except + speak_local fallback |
+
+**pytest**: 62 → 69 passed (+7 safety tests)
+
+**實機 smoke 進度**:
+- ✅ Test 1 announce_error (Funk.aiff + 中文 say)
+- ✅ Test 2 q-exit 乾淨（無 traceback、ps aux 空）
+- ⏳ Test 3 OCR injection 真機驗證（最關鍵 gate）
+- ⏳ Test 4 Ollama 殺掉 → watchdog
+
+**下一步**：
+1. 跑完 Test 3+4
+2. 若兩項都 ✅ → 開始視障者訪談（DESIGN.md #1 blocker）
+3. P1 收尾批：Ctrl+C handler、log rotate、samples 路徑（一個 small commit）
+
+---
+
 ## 🟢 2026-04-26 Chat MVP Phase 3 完工（完整 push-to-talk Q&A）
 
 **完成**：
