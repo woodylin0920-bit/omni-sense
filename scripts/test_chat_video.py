@@ -19,11 +19,18 @@ QUESTIONS = [
 ]
 
 VIDEOS = [
+    # 原本 5 支（英文街景）
     (str(_HERE / "samples" / "test_youtube.mp4"),    [10, 120, 300]),
     (str(_HERE / "samples" / "test_street.mp4"),     [5, 10]),
     (str(_HERE / "samples" / "walk_street_fp.mp4"),  [10, 60, 120]),
     (str(_HERE / "samples" / "crosswalk_fp.mp4"),    [5, 30]),
     (str(_HERE / "samples" / "indoor_mall.mp4"),     [10, 60]),
+    # 新增 5 支（中文 / 夜間 / 室內 / 近距離）
+    (str(_HERE / "samples" / "clips" / "taipei_walk_30s.mp4"),   [5, 15, 25]),
+    (str(_HERE / "samples" / "clips" / "hk_night_30s.mp4"),      [5, 15, 25]),
+    (str(_HERE / "samples" / "clips" / "subway_30s.mp4"),        [5, 15, 25]),
+    (str(_HERE / "samples" / "clips" / "night_walk_30s.mp4"),    [5, 10, 18]),  # 22s only
+    (str(_HERE / "samples" / "clips" / "store_indoor_30s.mp4"),  [2, 4, 6]),    # 7s only
 ]
 
 
