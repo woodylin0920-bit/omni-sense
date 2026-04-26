@@ -694,3 +694,57 @@ def test_init_lazy_import_path():
     assert p.lang == "zh"
     # YOLO still not at module level after __init__
     assert not hasattr(pipeline, "YOLO")
+
+
+def test_process_stream_warms_up_before_threads(monkeypatch):
+    """Regression：process_stream 必須在 spawn capture/analyze 前用第一幀跑 _detect 預熱，
+    否則短影片會在 MPS/CoreML JIT 重編譯時錯過整段 stream。"""
+    import numpy as np
+    import cv2 as _cv2
+
+    # 假 cv2.VideoCapture：第一次 read() 回 frame，後續回 EOF
+    class _FakeCap:
+        def __init__(self):
+            self._reads = 0
+        def isOpened(self): return True
+        def read(self):
+            self._reads += 1
+            if self._reads <= 1:
+                return True, np.zeros((720, 1280, 3), dtype=np.uint8)
+            return False, None
+        def get(self, key): return 0
+        def set(self, key, val): return True
+        def release(self): pass
+
+    fake_cap = _FakeCap()
+    monkeypatch.setattr(_cv2, "VideoCapture", lambda src: fake_cap)
+    monkeypatch.setattr(_cv2, "imshow", lambda *a, **k: None)
+    monkeypatch.setattr(_cv2, "waitKey", lambda *a, **k: 0)
+    monkeypatch.setattr(_cv2, "destroyAllWindows", lambda: None)
+
+    pipe = pipeline.OmniSensePipeline.__new__(pipeline.OmniSensePipeline)
+    pipe.lang = "zh"
+    pipe._stop_event = __import__("threading").Event()
+    pipe._stop_event.set()  # 立刻退出主 loop
+    pipe._frame_lock = __import__("threading").Lock()
+    pipe._latest_frame = None
+    pipe._capture_thread = None
+    pipe._analyze_thread = None
+    pipe._bg_thread = None
+    pipe._bg_lock = __import__("threading").Lock()
+    pipe._chat_busy = False
+    pipe._chat_lock = __import__("threading").Lock()
+    pipe._last_detections = []
+
+    detect_calls = []
+
+    def _fake_detect(frame):
+        detect_calls.append(frame.shape)
+        return []
+
+    pipe._detect = _fake_detect
+
+    pipe.process_stream("dummy.mp4")
+
+    assert len(detect_calls) >= 1, "process_stream 沒做 real-shape warmup！"
+    assert detect_calls[0] == (720, 1280, 3)
