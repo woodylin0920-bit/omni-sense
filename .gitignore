@@ -43,3 +43,6 @@ logs/
 .rapidocr_cache/
 .mlx_cache/
 samples/archive/
+
+# inbox handoff 暫存
+docs/prompts/_inbox.md

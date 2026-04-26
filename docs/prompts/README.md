@@ -9,6 +9,19 @@
 | 2 | phase2-whisper.md | ✅ 完工（見 git log）|
 | 3 | phase3-chat.md | ⏳ 待寫 |
 
+## Inbox handoff 流程（規劃端 ↔ 執行端）
+
+雙 session 拆分：
+- 規劃端（terminal Opus 4.7）：驗收、設計、寫 prompt
+- 執行端（Cursor Sonnet）：commit / pytest / push
+
+流程：
+1. 規劃端寫好 prompt → 存到 docs/prompts/_inbox.md（gitignored）
+2. 執行端開新 chat 輸入 /inbox
+3. Sonnet 讀檔開工，完成後把 _inbox.md 搬到 phaseN-XXX.md
+
+_inbox.md 永遠 gitignored — 只是 cross-session 信箱。
+
 ## 怎麼用
 
 1. 開新 Claude Code session
