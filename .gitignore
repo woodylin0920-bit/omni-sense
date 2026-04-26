@@ -29,7 +29,7 @@ env/
 /tmp/
 /tmp_*
 omni_tts.mp3
-logs/*.jsonl
+logs/
 
 # Env / secrets
 .env
@@ -42,3 +42,4 @@ logs/*.jsonl
 *.mlpackage
 .rapidocr_cache/
 .mlx_cache/
+samples/archive/

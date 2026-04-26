@@ -13,7 +13,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 
 RUNS = 5  # 每項跑幾次（首次含 warm-up，去掉第一次再算）
-IMG = str(_HERE / "bus.jpg")
+IMG = str(_HERE / "samples" / "bus.jpg")
 
 
 def measure(fn, runs=RUNS):

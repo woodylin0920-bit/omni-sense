@@ -23,7 +23,7 @@ from typing import Optional
 
 # --- 設定 ---
 _HERE = Path(__file__).resolve().parent
-_WARMUP_IMG = _HERE / "bus.jpg"
+_WARMUP_IMG = _HERE / "samples" / "bus.jpg"
 
 _MLPACKAGE = _HERE / "yolo26s.mlpackage"
 _PTFILE    = _HERE / "yolo26s.pt"

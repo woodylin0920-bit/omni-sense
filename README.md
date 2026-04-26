@@ -134,7 +134,7 @@ python pipeline.py --source samples/test_youtube.mp4 --lang zh
 ### 單張圖片
 
 ```bash
-python pipeline.py --source bus.jpg
+python pipeline.py --source samples/bus.jpg
 ```
 
 ### Chat headless 測試（不需攝影機 / 麥克風）
