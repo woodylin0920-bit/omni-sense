@@ -127,6 +127,7 @@ GEMINI_ENDPOINT_PORT = 443
 
 # --- 結構化事件 log ---
 _event_log_fp = None  # 全 session 共用 file handle
+_log_disabled = False  # set True on disk-full / IO error to avoid recursive crash
 
 
 def init_event_log():
@@ -141,11 +142,20 @@ def init_event_log():
 
 
 def log_event(event_type: str, **payload):
-    """寫一行 JSONL 事件。fp 沒開就 noop（test 環境）。"""
+    """寫一行 JSONL 事件。fp 沒開就 noop（test 環境）。磁碟滿時永久自停用。"""
+    global _log_disabled
+    if _log_disabled:
+        return
     if _event_log_fp is None:
         return
-    record = {"ts": time.time(), "type": event_type, **payload}
-    _event_log_fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+    try:
+        record = {"ts": time.time(), "type": event_type, **payload}
+        _event_log_fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, IOError) as e:
+        _log_disabled = True
+        print(f"[log] event log disabled: {e}", flush=True)
+    except Exception:
+        _log_disabled = True
 
 
 # --- 網路偵測：測真正要連的 Gemini endpoint，不是 google.com ---
@@ -254,6 +264,19 @@ def speak_local(text: str, lang: str = "zh", priority: int = PRIORITY_L3):
             stderr=subprocess.DEVNULL,
         )
         _register_audio_proc_unlocked(proc, priority)
+
+
+def announce_error(text: str, lang: str = "zh"):
+    """視障 UX hard requirement: 所有 error path 必走此 helper，禁止只 print。"""
+    try:
+        subprocess.Popen(
+            ["afplay", "/System/Library/Sounds/Funk.aiff"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass  # afplay 失敗不能擋住 say
+    speak_local(text, lang=lang, priority=PRIORITY_L1)
 
 
 def speak_edge(text: str, lang: str = "zh", priority: int = PRIORITY_L2) -> bool:
@@ -846,7 +869,7 @@ class OmniSensePipeline:
             question = omni_sense_asr.transcribe(audio, lang=self.lang)
             print(f"[Chat] 問：{question!r}")
             if not question.strip():
-                print("[Chat] 未偵測到語音")
+                announce_error("沒聽到，請再說一次", lang=self.lang)
                 return
             import chat as _chat
             answer = _chat.answer_query(question, frame, detections, lang=self.lang)
@@ -855,8 +878,10 @@ class OmniSensePipeline:
                 speak_local(answer, lang=self.lang, priority=PRIORITY_L3)
                 log_event("chat_answer", question=question, answer=answer, lang=self.lang)
             else:
-                print("[Chat] 無法回答")
+                announce_error("處理失敗", lang=self.lang)
+                log_event("chat_no_answer", question=question, lang=self.lang)
         except Exception as e:
+            announce_error("處理失敗", lang=self.lang)
             print(f"[Chat] 錯誤：{e}")
             log_event("error", where="_handle_chat", err=str(e))
         finally:
@@ -874,6 +899,7 @@ class OmniSensePipeline:
 
         cap = cv2.VideoCapture(source)
         if not cap.isOpened():
+            announce_error("攝影機無法開啟，請檢查連線", lang=self.lang)
             raise RuntimeError(f"無法開啟 video source: {source}")
 
         print(f"開始串流 (source={source}, 分析 stride={FRAME_STRIDE})")
@@ -937,6 +963,8 @@ class OmniSensePipeline:
                                     daemon=True,
                                 ).start()
                                 print("[Chat] 開始錄音（3 秒）...")
+                        else:
+                            announce_error("仍在處理，請稍候", lang=self.lang)
         finally:
             self._stop_event.set()
             capture_t.join(timeout=2)

@@ -748,3 +748,40 @@ def test_process_stream_warms_up_before_threads(monkeypatch):
 
     assert len(detect_calls) >= 1, "process_stream 沒做 real-shape warmup！"
     assert detect_calls[0] == (720, 1280, 3)
+
+
+# === Test A1: announce_error 呼叫 speak_local 且使用 PRIORITY_L1 ===
+def test_announce_error_calls_speak_local():
+    """announce_error must call speak_local with PRIORITY_L1 and attempt Funk.aiff chime."""
+    with patch("subprocess.Popen") as mock_popen, \
+         patch("pipeline.speak_local") as mock_speak:
+        mock_popen.return_value = MagicMock()
+        pipeline.announce_error("測試錯誤", lang="zh")
+
+    mock_speak.assert_called_once_with("測試錯誤", lang="zh", priority=pipeline.PRIORITY_L1)
+    # Funk chime attempted
+    popen_calls = mock_popen.call_args_list
+    assert any("Funk.aiff" in str(c) for c in popen_calls)
+
+
+# === Test A2: log_event 磁碟滿時永久自停用 ===
+def test_log_event_self_disables_on_oserror(monkeypatch):
+    """OSError (disk full) must set _log_disabled=True and make subsequent calls noop."""
+    import pipeline as _p
+
+    monkeypatch.setattr(_p, "_log_disabled", False)
+
+    class _FailFP:
+        def write(self, *a, **k):
+            raise OSError(28, "No space left on device")
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(_p, "_event_log_fp", _FailFP())
+
+    # First call triggers the OSError — must not raise
+    _p.log_event("test_event", x=1)
+    assert _p._log_disabled is True
+
+    # Second call must be pure noop (no further write attempt)
+    _p.log_event("test_event_2", x=2)  # must not raise
