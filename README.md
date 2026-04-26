@@ -239,14 +239,14 @@ M1 Air 8GB，warm 狀態：
 
 | 嚴重度 | 問題 | 追蹤 |
 |---|---|---|
-| P0 (待驗證) | OCR prompt injection guard 已實作，**真實機尚未驗證**（需要對著惡意招牌按 SPACE 問「招牌寫什麼」） | |
-| P1 | Ctrl+C 產生 uncaught KeyboardInterrupt traceback（finally 區塊有跑、resource 有釋放，純 cosmetic） | |
-| P1 | log_event 無 rotation，長時間執行 logs/*.jsonl 會無限增長 | |
-| P2 | samples/test_street.mp4 已搬到 samples/archive/，部分文檔/script 路徑未更新 | |
-| P2 | YOLO `.mlpackage` 不接受 `.to(mps)`，啟動印 warning，自動 fallback CPU（pre-existing） | |
-| Future | ASR 固定錄 3 秒，非真正 push-to-release | |
-| Future | 真實環境 ASR WER 未測（目前只用 TTS 合成 baseline） | |
-| 🔴 Project | 視障者 user research = 0 / 10，shipping 前必須做 | |
+| P0 (待驗證) | OCR prompt injection guard 已實作，**真實機尚未驗證**（需要對著惡意招牌按 SPACE 問「招牌寫什麼」） | [#1](https://github.com/woodylin0920-bit/omni-sense/issues/1) |
+| P1 | Ctrl+C 產生 uncaught KeyboardInterrupt traceback（finally 區塊有跑、resource 有釋放，純 cosmetic） | [#2](https://github.com/woodylin0920-bit/omni-sense/issues/2) |
+| P1 | log_event 無 rotation，長時間執行 logs/*.jsonl 會無限增長 | [#3](https://github.com/woodylin0920-bit/omni-sense/issues/3) |
+| P2 | samples/test_street.mp4 已搬到 samples/archive/，部分文檔/script 路徑未更新 | [#4](https://github.com/woodylin0920-bit/omni-sense/issues/4) |
+| P2 | YOLO `.mlpackage` 不接受 `.to(mps)`，啟動印 warning，自動 fallback CPU（pre-existing） | [#5](https://github.com/woodylin0920-bit/omni-sense/issues/5) |
+| Future | ASR 固定錄 3 秒，非真正 push-to-release | [#6](https://github.com/woodylin0920-bit/omni-sense/issues/6) |
+| Future | 真實環境 ASR WER 未測（目前只用 TTS 合成 baseline） | [#7](https://github.com/woodylin0920-bit/omni-sense/issues/7) |
+| 🔴 Project | 視障者 user research = 0 / 10，shipping 前必須做 | [#8](https://github.com/woodylin0920-bit/omni-sense/issues/8) |
 
 ---
 
