@@ -8,6 +8,7 @@ pipeline.py 的 7 個必要 test。
 import os
 import time
 import socket
+import subprocess
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -762,6 +763,74 @@ def test_announce_error_calls_speak_local():
     # Funk chime attempted
     popen_calls = mock_popen.call_args_list
     assert any("Funk.aiff" in str(c) for c in popen_calls)
+
+
+# === Test B1: kill 後必須再 wait（避免殭屍 proc）===
+def test_stop_current_audio_kill_then_wait():
+    """After terminate() TimeoutExpired, kill() must be followed by wait() to reap zombie."""
+    wait_call_count = [0]
+
+    mock_proc = MagicMock()
+    mock_proc.poll.return_value = None  # proc still alive
+
+    def _side_wait(timeout=None):
+        wait_call_count[0] += 1
+        if wait_call_count[0] == 1:
+            raise subprocess.TimeoutExpired(cmd="say", timeout=0.2)
+        return None  # second call (after kill) succeeds
+
+    mock_proc.wait.side_effect = _side_wait
+
+    pipeline._current_audio_proc = mock_proc
+    pipeline._current_audio_priority = pipeline.PRIORITY_L1
+    pipeline._current_audio_started = 0.0
+
+    pipeline._stop_current_audio_unlocked()
+
+    assert mock_proc.kill.called, "kill() must be called after terminate() timeout"
+    assert wait_call_count[0] >= 2, "wait() must be called again after kill() to reap zombie"
+
+    pipeline._current_audio_proc = None
+    pipeline._current_audio_priority = 99
+    pipeline._current_audio_started = 0.0
+
+
+# === Test B3: speak_edge fallback when NamedTemporaryFile fails ===
+def test_speak_edge_fallback_on_namedtempfile_error(monkeypatch):
+    """speak_edge must return False and call speak_local if NamedTemporaryFile raises OSError."""
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile",
+                        lambda **kw: (_ for _ in ()).throw(OSError("disk full")))
+
+    with patch("pipeline.speak_local") as mock_speak:
+        result = pipeline.speak_edge("測試", lang="zh")
+
+    assert result is False
+    mock_speak.assert_called_once()
+
+
+# === Test B4: watchdog detects dead worker thread ===
+def test_process_stream_watchdog_detects_dead_thread(monkeypatch):
+    """_check_worker_threads must announce_error and set stop_event when a thread dies unexpectedly."""
+    p = make_pipeline()
+    p._stop_event.clear()
+
+    announced = []
+    monkeypatch.setattr(pipeline, "announce_error", lambda *a, **k: announced.append(a))
+
+    dead_t = threading.Thread(target=lambda: None)
+    dead_t.start()
+    dead_t.join()  # definitely dead
+
+    alive_t = MagicMock()
+    alive_t.is_alive.return_value = True
+
+    triggered = p._check_worker_threads([("capture", dead_t), ("analyze", alive_t)])
+
+    assert triggered is True
+    assert p._stop_event.is_set()
+    assert len(announced) == 1
 
 
 # === Test A2: log_event 磁碟滿時永久自停用 ===

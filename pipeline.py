@@ -217,11 +217,14 @@ def _stop_current_audio_unlocked():
         try:
             _current_audio_proc.terminate()
             _current_audio_proc.wait(timeout=0.2)
-        except Exception:
+        except subprocess.TimeoutExpired:
             try:
                 _current_audio_proc.kill()
+                _current_audio_proc.wait(timeout=0.5)  # reap zombie after kill
             except Exception:
                 pass
+        except Exception:
+            pass
     _current_audio_proc = None
     _current_audio_priority = 99
     _current_audio_started = 0.0
@@ -293,15 +296,16 @@ def speak_edge(text: str, lang: str = "zh", priority: int = PRIORITY_L2) -> bool
     }
     voice = voice_map.get(lang, voice_map["zh"])
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-    tmp_path = tmp.name
-    tmp.close()
-
-    async def _run():
-        communicate = edge_tts.Communicate(text, voice)
-        await communicate.save(tmp_path)
-
+    tmp_path = None
     try:
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+
+        async def _run():
+            communicate = edge_tts.Communicate(text, voice)
+            await communicate.save(tmp_path)
+
         asyncio.run(_run())
         with _audio_lock:
             if _audio_alive_unlocked() and priority > _current_audio_priority:
@@ -329,8 +333,12 @@ def speak_edge(text: str, lang: str = "zh", priority: int = PRIORITY_L2) -> bool
         threading.Thread(target=_cleanup, args=(tmp_path, proc), daemon=True).start()
         return True
     except Exception as e:
-        Path(tmp_path).unlink(missing_ok=True)
-        print(f"[TTS] edge-tts 失敗（{e}），改用本地 say")
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        print(f"[TTS] edge-tts 失敗（{e}），fallback say", flush=True)
         speak_local(text, lang, priority=priority)
         return False
 
@@ -534,6 +542,7 @@ class OmniSensePipeline:
         self._last_detections: list = []
         self._chat_busy = False
         self._chat_lock = threading.Lock()
+        self._chat_thread: Optional[threading.Thread] = None
 
         import torch
         device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -888,6 +897,16 @@ class OmniSensePipeline:
             with self._chat_lock:
                 self._chat_busy = False
 
+    def _check_worker_threads(self, workers: list) -> bool:
+        """Watchdog: if a worker died without stop_event set, announce and stop. Returns True if triggered."""
+        for name, t in workers:
+            if not t.is_alive() and not self._stop_event.is_set():
+                announce_error("系統錯誤，背景處理已停止，正在退出", lang=self.lang)
+                log_event("worker_thread_died", thread=name)
+                self._stop_event.set()
+                return True
+        return False
+
     def process_stream(self, source):
         """攝影機或影片檔連續流。3 lanes：capture / analyze / display。
 
@@ -904,30 +923,31 @@ class OmniSensePipeline:
 
         print(f"開始串流 (source={source}, 分析 stride={FRAME_STRIDE})")
 
-        # Real-shape warmup：用第一幀預編 MPS/CoreML kernel，避免 analyze 第一 tick 卡 2-5s
-        # 把整支短影片放完還沒處理到任何事件
-        ok, first_frame = cap.read()
-        if ok:
-            print(f"  warm up at video resolution {first_frame.shape[1]}x{first_frame.shape[0]}...")
-            t0 = time.perf_counter()
-            for _ in range(2):
-                self._detect(first_frame)
-            print(f"  warm 完成 ({(time.perf_counter()-t0)*1000:.0f}ms)")
-            # rewind 影片到 frame 0；攝影機 rewind 失敗無妨
-            try:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            except Exception:
-                pass
-
-        print("按 q 或 ESC 結束｜SPACE 問問題（錄音 3 秒）")
-
-        self._stop_event.clear()
-        capture_t = threading.Thread(target=self._capture_loop, args=(cap,), daemon=True)
-        analyze_t = threading.Thread(target=self._analyze_loop, daemon=True)
-        capture_t.start()
-        analyze_t.start()
-
+        capture_t = None
+        analyze_t = None
         try:
+            # Real-shape warmup inside try so cap.release() is guaranteed on exception.
+            ok, first_frame = cap.read()
+            if ok:
+                print(f"  warm up at video resolution {first_frame.shape[1]}x{first_frame.shape[0]}...")
+                t0 = time.perf_counter()
+                for _ in range(2):
+                    self._detect(first_frame)
+                print(f"  warm 完成 ({(time.perf_counter()-t0)*1000:.0f}ms)")
+                try:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                except Exception:
+                    pass
+
+            print("按 q 或 ESC 結束｜SPACE 問問題（錄音 3 秒）")
+
+            self._stop_event.clear()
+            capture_t = threading.Thread(target=self._capture_loop, args=(cap,), daemon=True)
+            analyze_t = threading.Thread(target=self._analyze_loop, daemon=True)
+            capture_t.start()
+            analyze_t.start()
+
+            last_watchdog = time.perf_counter()
             while not self._stop_event.is_set():
                 with self._frame_lock:
                     current_frame = self._latest_frame
@@ -957,21 +977,40 @@ class OmniSensePipeline:
                             if snapshot is not None:
                                 self._chat_busy = True
                                 dets = list(self._last_detections)
-                                threading.Thread(
+                                self._chat_thread = threading.Thread(
                                     target=self._handle_chat,
                                     args=(snapshot, dets),
                                     daemon=True,
-                                ).start()
+                                )
+                                self._chat_thread.start()
                                 print("[Chat] 開始錄音（3 秒）...")
                         else:
                             announce_error("仍在處理，請稍候", lang=self.lang)
+
+                # Watchdog: detect unexpectedly dead worker threads (1s cadence)
+                now = time.perf_counter()
+                if now - last_watchdog > 1.0:
+                    last_watchdog = now
+                    self._check_worker_threads([("capture", capture_t), ("analyze", analyze_t)])
         finally:
             self._stop_event.set()
-            capture_t.join(timeout=2)
-            analyze_t.join(timeout=2)
-            # stream 結束後殺殘留 say/afplay 避免「影片停了還在響」
+            if capture_t is not None:
+                capture_t.join(timeout=2)
+            if analyze_t is not None:
+                analyze_t.join(timeout=2)
+            bg = getattr(self, "_bg_thread", None)
+            if bg is not None and bg.is_alive():
+                bg.join(timeout=2)
+            chat_t = getattr(self, "_chat_thread", None)
+            if chat_t is not None and chat_t.is_alive():
+                chat_t.join(timeout=2)
             with _audio_lock:
                 _stop_current_audio_unlocked()
+            if _event_log_fp is not None:
+                try:
+                    _event_log_fp.close()
+                except Exception:
+                    pass
             cap.release()
             cv2.destroyAllWindows()
 
