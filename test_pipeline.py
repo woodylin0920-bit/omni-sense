@@ -543,6 +543,7 @@ def test_process_stream_clean_shutdown():
 
     with patch.dict("sys.modules", {"cv2": mock_cv2}), \
          patch.object(p, "process_frame"), \
+         patch.object(p, "_detect", return_value=[]), \
          patch("builtins.print"):
         p.process_stream("fake.mp4")
 

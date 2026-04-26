@@ -877,6 +877,22 @@ class OmniSensePipeline:
             raise RuntimeError(f"無法開啟 video source: {source}")
 
         print(f"開始串流 (source={source}, 分析 stride={FRAME_STRIDE})")
+
+        # Real-shape warmup：用第一幀預編 MPS/CoreML kernel，避免 analyze 第一 tick 卡 2-5s
+        # 把整支短影片放完還沒處理到任何事件
+        ok, first_frame = cap.read()
+        if ok:
+            print(f"  warm up at video resolution {first_frame.shape[1]}x{first_frame.shape[0]}...")
+            t0 = time.perf_counter()
+            for _ in range(2):
+                self._detect(first_frame)
+            print(f"  warm 完成 ({(time.perf_counter()-t0)*1000:.0f}ms)")
+            # rewind 影片到 frame 0；攝影機 rewind 失敗無妨
+            try:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            except Exception:
+                pass
+
         print("按 q 或 ESC 結束｜SPACE 問問題（錄音 3 秒）")
 
         self._stop_event.clear()
@@ -925,6 +941,9 @@ class OmniSensePipeline:
             self._stop_event.set()
             capture_t.join(timeout=2)
             analyze_t.join(timeout=2)
+            # stream 結束後殺殘留 say/afplay 避免「影片停了還在響」
+            with _audio_lock:
+                _stop_current_audio_unlocked()
             cap.release()
             cv2.destroyAllWindows()
 
