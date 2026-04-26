@@ -119,13 +119,87 @@ def test_sign_question_with_ocr_calls_ollama(monkeypatch):
     """Sign question with OCR text present should still call Ollama (not skip)."""
     called = []
     fake_ollama = types.SimpleNamespace()
-    fake_ollama.chat = lambda *a, **kw: called.append(1) or {"message": {"content": "前方招牌寫著「某商店」。"}}
+    # Use OCR text "便利商店" (which is in the autouse OCR mock) so leak-guard doesn't fire.
+    fake_ollama.chat = lambda *a, **kw: called.append(1) or {"message": {"content": "前方招牌寫著「便利商店」。"}}
     monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
     monkeypatch.delitem(sys.modules, "chat", raising=False)
     import chat
     ans = chat.answer_query("前面那個招牌寫什麼？", _frame(), _dets(), lang="zh")
     assert called == [1]
-    assert "某商店" in ans
+    assert "便利商店" in ans
+
+
+def test_fewshot_leak_blocked(monkeypatch):
+    """Gemma echoes few-shot placeholder ('咖啡館') not present in real OCR → template fallback."""
+    fake_ollama = types.SimpleNamespace()
+    fake_ollama.chat = lambda *a, **kw: {"message": {"content": "前方招牌寫著「咖啡館」，目前營業中。"}}
+    monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
+
+    fake_ocr = types.SimpleNamespace()
+    fake_ocr.ocr_full_frame = lambda *a, **kw: [
+        ((0, 0, 10, 10), "Instagram", 0.9),
+        ((10, 0, 20, 10), "NEONSIGNS", 0.8),
+    ]
+    monkeypatch.setitem(sys.modules, "omni_sense_ocr", fake_ocr)
+    monkeypatch.delitem(sys.modules, "chat", raising=False)
+
+    import chat
+    ans = chat.answer_query("前面那個招牌寫什麼？", _frame(), _dets(), lang="zh")
+    assert "咖啡館" not in ans
+    assert "營業中" not in ans
+    # detections present → template fallback should mention person / car
+    assert "person" in ans or "car" in ans
+
+
+def test_fallback_uses_ocr_when_no_detection(monkeypatch):
+    """Leak token + detections=[] + OCR with text → fallback quotes OCR (not no-text reply)."""
+    fake_ocr = types.SimpleNamespace()
+    fake_ocr.ocr_full_frame = lambda *a, **kw: [
+        ((0, 0, 10, 10), "Instagram", 0.9),
+        ((0, 0, 10, 10), "NEONSIGNS", 0.85),
+    ]
+    monkeypatch.setitem(sys.modules, "omni_sense_ocr", fake_ocr)
+
+    fake_ollama = types.SimpleNamespace()
+    fake_ollama.chat = lambda *a, **kw: {"message": {"content": "前方招牌寫著「咖啡館」。"}}
+    monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
+    monkeypatch.delitem(sys.modules, "chat", raising=False)
+
+    import chat
+    answer = chat.answer_query("招牌寫什麼？", _frame(), [], lang="zh")
+    assert answer != ""
+    assert "咖啡館" not in answer  # leak blocked
+    assert ("Instagram" in answer) or ("NEONSIGNS" in answer)  # OCR cited
+
+
+def test_boilerplate_falls_back_to_ocr_when_no_detection(monkeypatch):
+    """YOLO miss + OCR present + Gemma boilerplate → fallback should cite OCR text."""
+    fake_ocr = types.SimpleNamespace()
+    fake_ocr.ocr_full_frame = lambda *a, **kw: [
+        ((0, 0, 10, 10), "Welcome", 0.9),
+        ((0, 0, 10, 10), "OPEN", 0.85),
+    ]
+    monkeypatch.setitem(sys.modules, "omni_sense_ocr", fake_ocr)
+
+    fake_ollama = types.SimpleNamespace()
+    fake_ollama.chat = lambda *a, **kw: {"message": {"content": "無法判斷前方狀況。"}}
+    monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
+    monkeypatch.delitem(sys.modules, "chat", raising=False)
+
+    import chat
+    answer = chat.answer_query("前面有什麼？", _frame(), [], lang="zh")
+    assert "無法判斷" not in answer
+    assert ("Welcome" in answer) or ("OPEN" in answer)
+
+
+def test_has_fewshot_leak_helper():
+    """_has_fewshot_leak should detect placeholder tokens not in OCR."""
+    import chat
+    ocr_with_keyword = [((0, 0, 10, 10), "咖啡館", 0.9)]
+    ocr_without = [((0, 0, 10, 10), "Instagram", 0.9)]
+    assert chat._has_fewshot_leak("前方招牌寫著「咖啡館」", ocr_without) is True
+    assert chat._has_fewshot_leak("前方招牌寫著「咖啡館」", ocr_with_keyword) is False
+    assert chat._has_fewshot_leak("前方有人和車輛。", ocr_without) is False
 
 
 def test_answer_query_ollama_failure_returns_empty(monkeypatch):

@@ -80,3 +80,32 @@ def test_ocr_full_frame_normalizes_polys_to_xyxy(monkeypatch):
     assert xyxy == (10, 20, 32, 42)
     assert text == "STORE"
     assert score == pytest.approx(0.8)
+
+
+def test_ocr_full_frame_filters_short_fragments(monkeypatch):
+    """Single-letter OCR fragments ('W', 'N', 'NY') filtered by min_len=2 default."""
+    fake = _FakeOCR(result=[
+        ([[0, 0], [10, 0], [10, 10], [0, 10]], "W", 0.95),
+        ([[20, 0], [40, 0], [40, 10], [20, 10]], "N", 0.92),
+        ([[0, 20], [40, 20], [40, 30], [0, 30]], "STORE", 0.85),
+    ])
+    monkeypatch.setattr(omni_sense_ocr, "_get_ocr", lambda: fake)
+
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    out = omni_sense_ocr.ocr_full_frame(frame)  # use defaults (min_len=2)
+    texts = [r[1] for r in out]
+    assert "W" not in texts
+    assert "N" not in texts
+    assert "STORE" in texts
+
+
+def test_ocr_text_in_box_filters_short_fragments(monkeypatch):
+    """ocr_text_in_box also drops single-char fragments by default."""
+    fake = _FakeOCR(result=[
+        ([[0, 0], [10, 0], [10, 10], [0, 10]], "T", 0.95),
+        ([[0, 0], [10, 0], [10, 10], [0, 10]], "EXIT", 0.85),
+    ])
+    monkeypatch.setattr(omni_sense_ocr, "_get_ocr", lambda: fake)
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    out = omni_sense_ocr.ocr_text_in_box(frame, (0, 0, 80, 80))
+    assert out == ["EXIT"]

@@ -20,12 +20,13 @@ def _get_ocr():
     return _ocr_instance
 
 
-def ocr_text_in_box(frame, box_xyxy, min_conf: float = 0.5) -> list[str]:
+def ocr_text_in_box(frame, box_xyxy, min_conf: float = 0.7, min_len: int = 2) -> list[str]:
     """
     在 frame 的 (x1,y1,x2,y2) 範圍內跑 OCR，回傳偵測到的文字 list。
     frame: numpy BGR (cv2 預設)
     box_xyxy: (x1, y1, x2, y2) tuple of int
-    min_conf: 信心分數門檻
+    min_conf: 信心分數門檻（預設 0.7）
+    min_len: 文字最少長度（預設 2，過濾單字母碎片如 "W" / "N"）
     """
     x1, y1, x2, y2 = [int(v) for v in box_xyxy]
     h, w = frame.shape[:2]
@@ -38,12 +39,16 @@ def ocr_text_in_box(frame, box_xyxy, min_conf: float = 0.5) -> list[str]:
     result, _ = ocr(crop)
     if not result:
         return []
-    return [text for box, text, score in result if score >= min_conf]
+    return [
+        text for box, text, score in result
+        if score >= min_conf and len(text.strip()) >= min_len
+    ]
 
 
-def ocr_full_frame(frame, min_conf: float = 0.5) -> list[tuple[tuple[int, int, int, int], str, float]]:
+def ocr_full_frame(frame, min_conf: float = 0.7, min_len: int = 2) -> list[tuple[tuple[int, int, int, int], str, float]]:
     """整張 frame 跑 OCR，回 [(box_xyxy, text, score), ...]。
-    chat 場景下若 YOLO 沒偵測到 sign 類別也能用。"""
+    chat 場景下若 YOLO 沒偵測到 sign 類別也能用。
+    min_conf 0.7 + min_len 2 過濾低信心 + 單字母碎片（避免 "W"/"N" 引發 LLM 幻覺）。"""
     ocr = _get_ocr()
     result, _ = ocr(frame)
     if not result:
@@ -51,6 +56,8 @@ def ocr_full_frame(frame, min_conf: float = 0.5) -> list[tuple[tuple[int, int, i
     out = []
     for box, text, score in result:
         if score < min_conf:
+            continue
+        if len(text.strip()) < min_len:
             continue
         xs = [p[0] for p in box]
         ys = [p[1] for p in box]

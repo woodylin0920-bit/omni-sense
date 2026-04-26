@@ -19,15 +19,18 @@ _SYSTEM = {
     "zh": (
         "你是視障導航助理。根據偵測到的物件與文字直接回答，"
         "用繁體中文一句話（30字以內）。不要說「我」、不要道歉、不要重複問題。"
+        "回答招牌題時，必須引用『畫面文字』中的原文；禁止使用範例占位詞。"
     ),
     "en": (
         "You are a blind navigation assistant. Give a direct one-sentence answer "
         "(under 30 words) based on the detected objects and text. "
-        "No apologies, no repeating the question."
+        "No apologies, no repeating the question. "
+        "For sign questions, quote the actual text from 'Text:'; never use example placeholders."
     ),
     "ja": (
         "視覚障害者向けナビゲーションアシスタント。"
         "検出情報を元に30字以内で直接答えてください。謝罪や前置き不要。"
+        "看板の質問には『テキスト』欄の原文を引用してください；例の占位詞は禁止。"
     ),
 }
 
@@ -41,9 +44,9 @@ _FEWSHOT = {
         {"role": "assistant", "content": "前方有行人和車輛，行人距離很近，請注意。"},
         {
             "role": "user",
-            "content": "場景：\n偵測物件：person（mid）\n畫面文字：「某商店」、「開放中」\n\n問題：前面那個招牌寫什麼？",
+            "content": "場景：\n偵測物件：person（mid）\n畫面文字：「咖啡館」、「營業中」\n\n問題：前面那個招牌寫什麼？",
         },
-        {"role": "assistant", "content": "前方招牌寫著「某商店」，目前開放中。"},
+        {"role": "assistant", "content": "前方招牌寫著「咖啡館」，目前營業中。"},
     ],
     "en": [
         {
@@ -86,6 +89,19 @@ _NO_TEXT_REPLY = {
     "en": "No readable text in the scene.",
     "ja": "画面に判別できる文字はありません。",
 }
+
+# Few-shot example placeholders. If Gemma includes these in an answer
+# but they don't appear in actual OCR results, it's a leak — fall back to template.
+_LEAK_TOKENS = ["某商店", "開放中", "咖啡館", "營業中"]
+
+
+def _has_fewshot_leak(answer: str, ocr_results: list) -> bool:
+    """Detect few-shot placeholder leaking into answer when not in real OCR."""
+    ocr_blob = " ".join(r[1] for r in ocr_results if isinstance(r, (list, tuple)) and len(r) > 1)
+    for token in _LEAK_TOKENS:
+        if token in answer and token not in ocr_blob:
+            return True
+    return False
 
 
 def _is_sign_question(question: str, lang: str) -> bool:
@@ -143,15 +159,24 @@ def _is_boilerplate(text: str, lang: str) -> bool:
     return any(p in lower for p in _BAD_PATTERNS.get(lang, _BAD_PATTERNS["zh"]))
 
 
-def _template_fallback(detections: list, lang: str) -> str:
+def _template_fallback(detections: list, ocr_results: list, lang: str) -> str:
+    """Safe fallback when LLM output can't be trusted.
+    Prefer YOLO detections; if empty, quote OCR; if both empty, return ''."""
     labels = list(dict.fromkeys(d[0] for d in detections[:3]))
-    if not labels:
-        return ""
-    if lang == "zh":
-        return "前方偵測到：" + "、".join(labels) + "。"
-    if lang == "en":
-        return "Detected in front: " + ", ".join(labels) + "."
-    return "前方に検出：" + "、".join(labels) + "。"
+    if labels:
+        if lang == "zh":
+            return "前方偵測到：" + "、".join(labels) + "。"
+        if lang == "en":
+            return "Detected in front: " + ", ".join(labels) + "."
+        return "前方に検出：" + "、".join(labels) + "。"
+    texts = [r[1] for r in ocr_results[:3] if r[1].strip()]
+    if texts:
+        if lang == "zh":
+            return "前方有文字：" + "、".join(f"「{t}」" for t in texts) + "。"
+        if lang == "en":
+            return "Text in front: " + ", ".join(f'"{t}"' for t in texts) + "."
+        return "前方にテキスト：" + "、".join(f"「{t}」" for t in texts) + "。"
+    return ""
 
 
 def answer_query(
@@ -201,8 +226,16 @@ def answer_query(
         raw = resp["message"]["content"].strip()
         answer = _trim_to_sentence(raw)
 
-        if _is_boilerplate(answer, lang) and detections:
-            return _template_fallback(detections, lang)
+        if _is_boilerplate(answer, lang):
+            fallback = _template_fallback(detections, clean_ocr, lang)
+            if fallback:
+                return fallback
+
+        # Few-shot leak guard: if answer contains placeholder words not in real OCR,
+        # fall back to template (uses detections OR ocr; final no-text reply if both empty).
+        if _has_fewshot_leak(answer, clean_ocr):
+            fallback = _template_fallback(detections, clean_ocr, lang)
+            return fallback or _NO_TEXT_REPLY.get(lang, _NO_TEXT_REPLY["zh"])
 
         return answer
     except Exception:
